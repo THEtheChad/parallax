@@ -1,0 +1,8 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "fake-diff",
+  "lsp": { "command": ["node", "{bin}"] },
+  "env": { "clear": ["FAKE_*"], "set": { "FAKE_DIFF": "1" } },
+  "libraryFiles": { "uriPrefix": "bundled:///libs/" },
+  "crash": { "exitCodes": [70], "stderr": ["panicked at "] }
+}
