@@ -225,6 +225,9 @@ export class LspClient {
         answered = r.error === undefined;
       } catch {}
       this.notify("exit", undefined);
+      // Let the server act on exit before it reads end of input: tsc 7 exits 1 on exit but 0 on EOF,
+      // so closing stdin at once makes its exit code a race.
+      await Promise.race([this.exited, new Promise((r) => setTimeout(r, Math.min(graceMs, 2000)))]);
       this.proc.stdin!.end();
     }
     let killed = false;

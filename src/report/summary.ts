@@ -11,6 +11,8 @@ function table(header: string[], rows: string[][]): string {
 export function renderSummary(s: Summary, { attentionLimit = 30 } = {}): string {
   const out: string[] = [];
   out.push(`${s.requests} requests; reference runs ${s.refRuns.join(", ")}; ${s.refUnstable} reference-unstable`);
+  for (const e of s.refEvidence ?? [])
+    out.push(`reference evidence ${e.bundle}: ${e.accepted ? `${e.refRuns.length} runs, ${s.refUnstableFromEvidence} requests unstable only with it` : `rejected (${e.reason})`}`);
   out.push(`normalization ${s.normalization.version} (${s.normalization.rules.join(", ")})`);
   out.push("");
   out.push(
@@ -27,7 +29,7 @@ export function renderSummary(s: Summary, { attentionLimit = 30 } = {}): string 
     const compared = t.match + t.normalized + t.differ;
     out.push(
       `${c.label}: ${t.match} match, ${t.normalized} normalized, ${t.differ} differ of ${compared} reference-stable answers; ` +
-        `${t["ref-unstable"]} reference-unstable (equal to one reference run on ${c.refUnstableMatchingARefRun})` +
+        `${t["ref-unstable"]} reference-unstable (equal to a reference variant on ${c.refUnstableMatchingARefRun})` +
         (t["only-ref"] + t["only-cand"] + t["not-reached"] + t["cand-unstable"]
           ? `; only-ref ${t["only-ref"]}, only-cand ${t["only-cand"]}, not-reached ${t["not-reached"]}, cand-unstable ${t["cand-unstable"]}`
           : ""),

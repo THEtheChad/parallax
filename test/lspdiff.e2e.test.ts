@@ -179,3 +179,36 @@ test("CLI: exit 0 when clean, 1 with differences, 2 on usage errors", () => {
   writeJsonAtomic(join(base, "ok", "bundle.json"), b);
   assert.ok(readdirSync(join(base, "ok", "runs")).includes("fake-same.1.stderr.log"));
 });
+
+test("reference evidence: an answer the same reference gave in a compatible bundle is a reference variant", async () => {
+  const root = makeProject();
+  const base = mkdtempSync(join(tmpdir(), "parallax-ev-"));
+  const run = (out: string) =>
+    lspDiff({ project: root, out: join(base, out), ref: side("fake-ref"), cands: [side("fake-diff")], files: 1, positions: 1, refRuns: 1, candRuns: 1, log: quiet });
+  const { dir, summary } = await run("live");
+  assert.equal(summary.candidates[0]!.totals.differ, 2);
+  // Evidence: a second bundle in which the reference answered as the candidate did.
+  const ev = (await run("ev")).dir;
+  writeFileSync(join(ev, "runs/fake-ref.1.jsonl"), readFileSync(join(ev, "runs/fake-diff.1.jsonl")));
+  const s = await compareBundle(dir, readBundle(dir), { refEvidence: [ev] });
+  assert.deepEqual(s.refEvidence.map((e) => e.accepted), [true]);
+  const c = s.candidates[0]!;
+  assert.equal(c.totals.differ, 0);
+  assert.equal(c.totals["ref-unstable"], 2);
+  assert.equal(c.refUnstableMatchingARefRun, 2);
+  assert.equal(s.refUnstableFromEvidence, 2);
+  // Another reference binary: rejected, nothing changes.
+  const b = readBundle(ev);
+  b.sides[0]!.binSha256 = "0".repeat(64);
+  writeJsonAtomic(join(ev, "bundle.json"), b);
+  const r = await compareBundle(dir, readBundle(dir), { refEvidence: [ev] });
+  assert.deepEqual(r.refEvidence.map((e) => e.reason), ["another reference binary"]);
+  assert.equal(r.candidates[0]!.totals.differ, 2);
+});
+
+test("import-lspdiff refuses a project directory that does not exist", () => {
+  const cli = join(here, "../src/cli.ts");
+  const r = spawnSync(process.execPath, [cli, "import-lspdiff", "--from", here, "--project", join(here, "no-such-dir"), "--ref", side("fake-ref"), "--cand", side("fake-same"), "--out", join(mkdtempSync(join(tmpdir(), "parallax-imp-")), "b")], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /no project directory/);
+});

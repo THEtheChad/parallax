@@ -5,12 +5,18 @@
 // and keeps two hashes per answer (base normalization; base + library locations); pass 2 re-reads,
 // by byte range, only the answers that differ, one pair at a time, to write their details.
 //
+// Reference evidence: other bundles of the same reference binary (sha256 and env), corpus (commit and
+// working-tree status) and session definition. Their reference runs are rescanned with this
+// normalizer, and every answer variant they hold counts as a reference variant: a variant seen once
+// stays seen. An incompatible bundle is rejected and recorded with the reason.
+//
 // Verdicts, per request identity and candidate side:
 //   match          equal to the (stable) reference under base normalization
 //   normalized     equal only once library-file locations are mapped (profile libraryFiles)
 //   differ         not equal: a candidate difference to triage
-//   ref-unstable   the reference runs disagree with each other (or only some asked it); never blamed
-//                  on the candidate. `refMatch` says whether the candidate equals one reference run
+//   ref-unstable   the reference runs disagree with each other (or only some asked it), or the same
+//                  reference binary answered otherwise in an evidence bundle (--ref-evidence); never
+//                  blamed on the candidate. `refMatch` says whether the candidate equals a reference variant
 //   cand-unstable  the candidate's own runs disagree with each other
 //   only-ref       the reference asked it and a cleanly finished candidate run did not
 //   only-cand      a candidate asked it and no reference run did
@@ -20,7 +26,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Bundle, RunRecord, SideRecord } from "../bundle/bundle.ts";
-import { writeJsonAtomic } from "../bundle/bundle.ts";
+import { readBundle, writeJsonAtomic } from "../bundle/bundle.ts";
 import { JsonlWriter, readLines, readRange } from "../bundle/lines.ts";
 import { parseExact } from "../json/exact.ts";
 import { describeDifference } from "./describe.ts";
@@ -71,11 +77,27 @@ export interface CandidateSummary {
   attention: { key: string; step: string; method: string; verdict: Verdict; detail: string | null }[];
 }
 
+export interface EvidenceRecord {
+  bundle: string;
+  accepted: boolean;
+  reason?: string;
+  refRuns: string[];
+}
+
+export interface CompareOptions {
+  log?: (msg: string) => void;
+  // Bundle directories whose reference answers count as reference variants.
+  refEvidence?: string[];
+}
+
 export interface Summary {
   normalization: { version: string; rules: readonly string[] };
   requests: number;
   refRuns: string[];
+  refEvidence: EvidenceRecord[];
   refUnstable: number;
+  // Of refUnstable: requests the reference answered alike in this bundle but otherwise in evidence.
+  refUnstableFromEvidence: number;
   sessions: {
     run: string;
     side: string;
@@ -127,9 +149,65 @@ async function scanRun(bundleDir: string, run: RunRecord, side: SideRecord, root
 
 const distinct = (xs: string[]): number => new Set(xs).size;
 
-export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg: string) => void = () => {}): Promise<Summary> {
+// Why `other` cannot serve as reference evidence for `b`, or null.
+export function evidenceProblem(b: Bundle, other: Bundle): string | null {
+  const ref = b.sides.find((s) => s.role === "ref");
+  const oref = other.sides.find((s) => s.role === "ref");
+  if (!ref || !oref) return "no reference side";
+  if (oref.binSha256 !== ref.binSha256) return "another reference binary";
+  if (JSON.stringify(oref.env.set) !== JSON.stringify(ref.env.set)) return "another reference environment";
+  if (other.corpus.gitCommit !== b.corpus.gitCommit) return "another corpus commit";
+  if (other.corpus.statusSha256Before !== b.corpus.statusSha256Before) return "another corpus working tree";
+  const [s, o] = [b.session, other.session];
+  if (s.script !== o.script || s.positions !== o.positions || s.typed !== o.typed || s.initializeSha256 !== o.initializeSha256 || JSON.stringify(s.files) !== JSON.stringify(o.files))
+    return "another session definition";
+  return null;
+}
+
+interface Variants {
+  hb: Set<string>;
+  hl: Set<string>;
+}
+
+async function loadEvidence(bundle: Bundle, dirs: string[], log: (msg: string) => void): Promise<{ records: EvidenceRecord[]; variants: Map<string, Variants> }> {
+  const records: EvidenceRecord[] = [];
+  const variants = new Map<string, Variants>();
+  for (const dir of dirs) {
+    let other: Bundle;
+    try {
+      other = readBundle(dir);
+    } catch (e) {
+      records.push({ bundle: dir, accepted: false, reason: (e as Error).message, refRuns: [] });
+      continue;
+    }
+    const problem = evidenceProblem(bundle, other);
+    const refRuns = other.runs.filter((r) => r.role === "ref");
+    records.push({ bundle: dir, accepted: problem === null, ...(problem ? { reason: problem } : {}), refRuns: refRuns.map((r) => r.id) });
+    if (problem) {
+      log(`reference evidence ${dir} rejected: ${problem}`);
+      continue;
+    }
+    const side = other.sides.find((s) => s.role === "ref")!;
+    const entries = new Map<string, Entry>();
+    for (const run of refRuns) await scanRun(dir, run, side, other.corpus.root, entries);
+    for (const [key, e] of entries) {
+      const v = variants.get(key) ?? { hb: new Set<string>(), hl: new Set<string>() };
+      for (const a of e.byRun.values()) {
+        v.hb.add(a.hb);
+        v.hl.add(a.hl);
+      }
+      variants.set(key, v);
+    }
+    log(`reference evidence ${dir}: ${refRuns.length} runs, ${entries.size} requests`);
+  }
+  return { records, variants };
+}
+
+export async function compareBundle(bundleDir: string, bundle: Bundle, opts: CompareOptions = {}): Promise<Summary> {
+  const log = opts.log ?? (() => {});
   const root = bundle.corpus.root;
   const sideByLabel = new Map(bundle.sides.map((s) => [s.label, s]));
+  const evidence = await loadEvidence(bundle, opts.refEvidence ?? [], log);
   const entries = new Map<string, Entry>();
   const scans: RunScan[] = [];
   // Reference runs first, so the merged order follows the reference.
@@ -155,6 +233,7 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg
   );
   const detailJobs: { cand: string; key: string; verdict: Verdict; file: string }[] = [];
   let refUnstable = 0;
+  let refUnstableFromEvidence = 0;
 
   rmSync(join(bundleDir, "verdicts.jsonl"), { force: true });
   rmSync(join(bundleDir, "differences"), { recursive: true, force: true });
@@ -165,8 +244,13 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg
     const refAbsentFinished = refScans.filter((s) => !e.byRun.has(s.run.id) && s.finished);
     const refHb = refPresent.map((s) => e.byRun.get(s.run.id)!.hb);
     const refHl = new Set(refPresent.map((s) => e.byRun.get(s.run.id)!.hl));
-    const refState = !refPresent.length ? "none" : distinct(refHb) > 1 || refAbsentFinished.length ? "unstable" : "stable";
+    const ev = refPresent.length ? evidence.variants.get(key) : undefined;
+    const evidenceOnly = ev ? [...ev.hb].some((h) => !refHb.includes(h)) : false;
+    for (const h of ev?.hl ?? []) refHl.add(h);
+    const unstableHere = distinct(refHb) > 1 || refAbsentFinished.length > 0;
+    const refState = !refPresent.length ? "none" : unstableHere || evidenceOnly ? "unstable" : "stable";
     if (refState === "unstable") refUnstable++;
+    if (refState === "unstable" && !unstableHere) refUnstableFromEvidence++;
     const verdicts: Record<string, Verdict> = {};
     const refMatch: Record<string, boolean> = {};
     for (const label of candLabels) {
@@ -202,7 +286,16 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg
       }
     }
     const hashes = Object.fromEntries([...e.byRun].map(([run, a]) => [run, a.hb.slice(0, 16)]));
-    await out.write({ key, step: e.step, method: e.method, ref: refState, verdicts, ...(Object.keys(refMatch).length ? { refMatch } : {}), hashes });
+    await out.write({
+      key,
+      step: e.step,
+      method: e.method,
+      ref: refState,
+      ...(evidenceOnly ? { refEvidence: true } : {}),
+      verdicts,
+      ...(Object.keys(refMatch).length ? { refMatch } : {}),
+      hashes,
+    });
   }
   await out.close();
 
@@ -249,7 +342,9 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg
     normalization: { version: NORMALIZE_VERSION, rules: NORMALIZE_RULES },
     requests: order.length,
     refRuns: refScans.map((s) => s.run.id),
+    refEvidence: evidence.records,
     refUnstable,
+    refUnstableFromEvidence,
     sessions,
     candidates,
     clean: candidates.every((c) => !c.attention.length) && sessions.every((s) => (s.outcome === "clean" || s.outcome === "imported") && s.shutdownClean !== false && !s.orderBreak),

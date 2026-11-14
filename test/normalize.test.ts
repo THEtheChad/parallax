@@ -17,8 +17,8 @@ test("completion items compare as a set; other arrays keep their order", () => {
   assert.deepEqual(a, b);
   const arr = normalizeValue({ result: [{ label: "b" }, { label: "a" }] }, n.base, "textDocument/completion");
   assert.deepEqual(arr, { result: [{ label: "a" }, { label: "b" }] });
-  const refs = normalizeValue({ result: [2, 1] }, n.base, "textDocument/references");
-  assert.deepEqual(refs, { result: [2, 1] });
+  const hl = normalizeValue({ result: [2, 1] }, n.base, "textDocument/documentHighlight");
+  assert.deepEqual(hl, { result: [2, 1] });
 });
 
 test("library locations: a URI prefix and a directory (with any percent-encoding) both map to <lib>/", () => {
@@ -31,4 +31,11 @@ test("library locations: a URI prefix and a directory (with any percent-encoding
   }
   // Only with the lib rules: base normalization keeps the forms apart.
   assert.notDeepEqual(normalizeValue({ uri: "bundled:///libs/lib.dom.d.ts" }, go.base), normalizeValue({ uri: `file://${dir}/lib.dom.d.ts` }, rs.base));
+});
+
+test("reference locations compare as a set", () => {
+  const n = makeNormalizer(root, undefined);
+  const a = normalizeValue({ result: [{ uri: "b", line: 1 }, { uri: "a", line: 2 }] }, n.base, "textDocument/references");
+  const b = normalizeValue({ result: [{ uri: "a", line: 2 }, { uri: "b", line: 1 }] }, n.base, "textDocument/references");
+  assert.deepEqual(a, b);
 });

@@ -5,6 +5,8 @@
 //     keys      object keys are compared in sorted order (key order means nothing in LSP)
 //     items     completion items are compared as a set: sorted by canonical text (servers emit items
 //               with equal sort keys in map order; editors sort by sortText anyway)
+//     locations reference locations are compared as a set: tsc 7 itself returns the same locations in
+//               different orders from run to run (5 of 6 reference instabilities on hono, 2026-11-13)
 //   lib (verdict `normalized` when equal only with it):
 //     lib       each side's bundled library location (profile libraryFiles) becomes <lib>/
 //
@@ -13,7 +15,7 @@
 import { pathToFileURL } from "node:url";
 
 export const NORMALIZE_VERSION = "parallax.normalize/1";
-export const NORMALIZE_RULES = ["root", "keys", "items", "lib"] as const;
+export const NORMALIZE_RULES = ["root", "keys", "items", "locations", "lib"] as const;
 
 export interface LibLocation {
   uriPrefix?: string;
@@ -65,6 +67,7 @@ export function normalizeValue(value: unknown, subs: [string, string][], method?
   };
   const n = walk(value);
   if (method === "textDocument/completion") return sortCompletionItems(n);
+  if (method === "textDocument/references") return sortResultArray(n);
   return n;
 }
 
@@ -73,6 +76,11 @@ const sortByText = (items: unknown[]): unknown[] =>
     .map((i): [string, unknown] => [JSON.stringify(i), i])
     .sort(([a], [b]) => compareText(a, b))
     .map(([, i]) => i);
+
+function sortResultArray(n: unknown): unknown {
+  const r = n as { result?: unknown } | null;
+  return r && typeof r === "object" && Array.isArray(r.result) ? { ...r, result: sortByText(r.result) } : n;
+}
 
 // Completion answers are `CompletionItem[]` or `CompletionList`; either way, inside { result }.
 function sortCompletionItems(n: unknown): unknown {

@@ -38,6 +38,7 @@ export interface LspDiffOptions {
   refRuns: number;
   candRuns: number;
   requestTimeoutMs?: number;
+  refEvidence?: string[];
   log: (msg: string) => void;
 }
 
@@ -115,7 +116,7 @@ export async function lspDiff(opts: LspDiffOptions): Promise<{ dir: string; bund
   if (bundle.corpus.changedDuringRun) bundle.notes.push("the corpus's git status changed during the run");
   bundle.host.loadAfter = loadavg();
   save();
-  const summary = await compareBundle(dir, bundle, opts.log);
+  const summary = await compareBundle(dir, bundle, { log: opts.log, refEvidence: opts.refEvidence ?? [] });
   bundle.status = "complete";
   bundle.finishedAt = new Date().toISOString();
   save();

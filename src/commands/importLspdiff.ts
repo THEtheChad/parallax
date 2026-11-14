@@ -4,7 +4,7 @@
 // bound to binaries given now; the bundle notes that their hashes are of today's files, not proven to
 // be the ones that ran.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { loadavg } from "node:os";
 import { join, resolve } from "node:path";
 import { BUNDLE_SCHEMA, corpusInfo, harnessInfo, hostInfo, sha256, sideRecord, writeJsonAtomic, type Bundle, type RunRecord } from "../bundle/bundle.ts";
@@ -44,6 +44,9 @@ async function convert(src: string, dest: string, id: string, side: Side): Promi
 export async function importLspdiff(opts: ImportOptions): Promise<{ dir: string; bundle: Bundle; summary: Summary }> {
   const from = resolve(opts.from);
   const root = resolve(opts.project);
+  if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`no project directory at ${root}`);
+  for (const name of ["go.jsonl", "go2.jsonl", "rs.jsonl"])
+    if (!existsSync(join(from, name))) throw new Error(`${from} has no ${name}: not a scripts/lspdiff diff output`);
   const ref = await bindSide(opts.ref, "ref");
   const cand = await bindSide(opts.cand, "cand");
   const dir = prepareBundleDir(opts.out);
@@ -84,7 +87,7 @@ export async function importLspdiff(opts: ImportOptions): Promise<{ dir: string;
   }
   bundle.host.loadAfter = loadavg();
   writeJsonAtomic(join(dir, "bundle.json"), bundle);
-  const summary = await compareBundle(dir, bundle, opts.log);
+  const summary = await compareBundle(dir, bundle, { log: opts.log });
   bundle.status = "complete";
   bundle.finishedAt = new Date().toISOString();
   writeJsonAtomic(join(dir, "bundle.json"), bundle);

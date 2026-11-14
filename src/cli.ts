@@ -13,7 +13,10 @@ import { renderSummary } from "./report/summary.ts";
 const USAGE = `usage:
   parallax lsp-diff --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
                     [--files 6] [--file <rel>]... [--positions 4] [--ref-runs 2] [--cand-runs 1] [--request-timeout-ms 600000]
-  parallax compare <bundle-dir>          recompute verdicts.jsonl, summary.json and differences/ from runs/
+                    [--ref-evidence <bundle-dir>]...
+  parallax compare <bundle-dir> [--ref-evidence <bundle-dir>]...
+                                         recompute verdicts.jsonl, summary.json and differences/ from runs/;
+                                         reference answers in compatible evidence bundles count as reference variants
   parallax summary <bundle-dir>          print summary.json
   parallax import-lspdiff --from <old-out-dir> --project <dir> --ref <profile>=<bin> --cand <profile>=<bin> --out <bundle-dir>
 
@@ -43,6 +46,7 @@ async function main(argv: string[]): Promise<number> {
         "ref-runs": { type: "string", default: "2" },
         "cand-runs": { type: "string", default: "1" },
         "request-timeout-ms": { type: "string", default: "600000" },
+        "ref-evidence": { type: "string", multiple: true },
       },
     });
     if (!o.project || !o.out || !o.ref || !o.cand?.length) throw new UsageError("lsp-diff needs --project, --out, --ref and --cand");
@@ -57,6 +61,7 @@ async function main(argv: string[]): Promise<number> {
       refRuns: Number(o["ref-runs"]),
       candRuns: Number(o["cand-runs"]),
       requestTimeoutMs: Number(o["request-timeout-ms"]),
+      refEvidence: (o["ref-evidence"] ?? []).map((d) => resolve(d)),
       log,
     });
     summary = r.summary;
@@ -71,10 +76,11 @@ async function main(argv: string[]): Promise<number> {
     summary = r.summary;
     log(`bundle ${r.dir}`);
   } else if (command === "compare") {
-    const dir = resolve(rest[0] ?? "");
-    if (!rest[0]) throw new UsageError("compare needs a bundle directory");
+    const { values: o, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { "ref-evidence": { type: "string", multiple: true } } });
+    if (positionals.length !== 1) throw new UsageError("compare needs one bundle directory");
+    const dir = resolve(positionals[0]!);
     const bundle = readBundle(dir);
-    summary = await compareBundle(dir, bundle, log);
+    summary = await compareBundle(dir, bundle, { log, refEvidence: (o["ref-evidence"] ?? []).map((d) => resolve(d)) });
     bundle.normalization = summary.normalization;
     writeJsonAtomic(join(dir, "bundle.json"), bundle);
   } else if (command === "summary") {
