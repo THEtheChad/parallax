@@ -9,5 +9,6 @@
   "processModel": "single",
   "libraryFiles": { "dir": "{binDir}" },
   "crash": { "exitCodes": [5], "stderr": ["panicked at ", "^thread '.*' panicked"] },
+  "shutdown": { "exitCodes": [1] },
   "knownGaps": ["automatic type acquisition"]
 }

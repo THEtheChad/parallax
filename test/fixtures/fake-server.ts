@@ -74,7 +74,9 @@ process.stdin.on("data", (chunk: Buffer) => {
       continue;
     }
     if (msg.method === "shutdown") {
-      send({ id: msg.id, result: null });
+      // Like tsc 7: shutdown takes no params, and `params: null` is an error.
+      if ("params" in msg) send({ id: msg.id, error: { code: -32602, message: "InvalidParams: expected no params" } });
+      else send({ id: msg.id, result: null });
       continue;
     }
     if (env.FAKE_CRASH_AFTER && answered >= Number(env.FAKE_CRASH_AFTER)) {

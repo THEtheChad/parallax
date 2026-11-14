@@ -52,6 +52,7 @@ interface EndRecord {
   exit?: unknown;
   crashSignals?: string[];
   answers?: number;
+  shutdownClean?: boolean;
 }
 
 interface RunScan {
@@ -75,7 +76,18 @@ export interface Summary {
   requests: number;
   refRuns: string[];
   refUnstable: number;
-  sessions: { run: string; side: string; role: string; outcome: string; answers: number; error?: string; crashSignals?: string[]; orderBreak: string | null }[];
+  sessions: {
+    run: string;
+    side: string;
+    role: string;
+    outcome: string;
+    answers: number;
+    error?: string;
+    crashSignals?: string[];
+    // null for imported runs (no shutdown was recorded).
+    shutdownClean: boolean | null;
+    orderBreak: string | null;
+  }[];
   candidates: CandidateSummary[];
   // Attention items across candidates, plus unclean sessions.
   clean: boolean;
@@ -229,6 +241,7 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg
     answers: s.keys.length,
     ...(s.end?.error ? { error: s.end.error } : {}),
     ...(s.end?.crashSignals?.length ? { crashSignals: s.end.crashSignals } : {}),
+    shutdownClean: s.end?.shutdownClean ?? null,
     orderBreak: orderBreak(order, s.keys, stepOf),
   }));
   const candidates = [...summaries.values()];
@@ -239,7 +252,7 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, log: (msg
     refUnstable,
     sessions,
     candidates,
-    clean: candidates.every((c) => !c.attention.length) && sessions.every((s) => (s.outcome === "clean" || s.outcome === "imported") && !s.orderBreak),
+    clean: candidates.every((c) => !c.attention.length) && sessions.every((s) => (s.outcome === "clean" || s.outcome === "imported") && s.shutdownClean !== false && !s.orderBreak),
   };
   writeJsonAtomic(join(bundleDir, "summary.json"), summary);
   return summary;

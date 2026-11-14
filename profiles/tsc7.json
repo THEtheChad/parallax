@@ -9,5 +9,6 @@
   "processModel": "single",
   "libraryFiles": { "uriPrefix": "bundled:///libs/" },
   "crash": { "exitCodes": [2], "stderr": ["^panic: ", "^fatal error: ", "^goroutine \\d+ \\["] },
+  "shutdown": { "exitCodes": [1] },
   "knownGaps": []
 }

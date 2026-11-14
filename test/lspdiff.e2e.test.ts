@@ -83,6 +83,7 @@ test("one bundle, four candidates: match, normalized, differ/only-ref, crash/not
   assert.equal(crash.totals["not-reached"], summary.requests - 10);
   const crashSession = summary.sessions.find((s) => s.run === "fake-crash.1")!;
   assert.equal(crashSession.outcome, "crash");
+  assert.equal(summary.sessions.find((s) => s.run === "fake-ref.1")!.shutdownClean, true);
   assert.ok(crashSession.crashSignals!.some((s) => s.includes("panicked at")));
   assert.equal(summary.clean, false);
 

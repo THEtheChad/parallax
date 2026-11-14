@@ -77,7 +77,7 @@ export async function runServer(opts: RunOptions): Promise<RunRecord> {
     error = (e as Error).message;
     opts.log?.(`${id}: ${outcome}: ${error}`);
   }
-  const { exit, clean } = await client.shutdown();
+  const { exit, clean } = await client.shutdown({ exitCodes: side.profile.shutdown?.exitCodes ?? [0] });
   stderr.end();
   await once(stderr, "finish");
   const signals = crashSignals(side.profile, exit.code, await tail(join(bundleDir, stderrFile), 1 << 16));

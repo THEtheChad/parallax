@@ -23,6 +23,8 @@ export interface Profile {
   // `<lib>/<file>` before comparing; an answer equal only after that mapping is verdict `normalized`.
   libraryFiles?: { uriPrefix?: string; dir?: string };
   crash?: { exitCodes?: number[]; stderr?: string[] };
+  // Exit codes of an orderly shutdown + exit (default [0]; tsc 7 exits 1 with "context canceled").
+  shutdown?: { exitCodes?: number[] };
   knownGaps?: string[];
 }
 
@@ -68,6 +70,9 @@ export function validateProfile(value: unknown, where: string): Profile {
       for (const re of crash.stderr) new RegExp(re, "m");
     }
   }
+  const shutdown = p.shutdown as Record<string, unknown> | undefined;
+  if (shutdown?.exitCodes !== undefined && !(Array.isArray(shutdown.exitCodes) && shutdown.exitCodes.every(Number.isInteger)))
+    fail(where, "shutdown.exitCodes must be integers");
   if (p.knownGaps !== undefined && !isStringArray(p.knownGaps)) fail(where, "knownGaps must be a string array");
   return p as unknown as Profile;
 }

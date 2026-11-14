@@ -16,7 +16,7 @@ export function renderSummary(s: Summary, { attentionLimit = 30 } = {}): string 
   out.push(
     table(
       ["session", "role", "outcome", "answers", "note"],
-      s.sessions.map((x) => [x.run, x.role, x.outcome, String(x.answers), [x.error, x.crashSignals?.join("; "), x.orderBreak && `order: ${x.orderBreak}`].filter(Boolean).join("; ")]),
+      s.sessions.map((x) => [x.run, x.role, x.outcome, String(x.answers), [x.error, x.crashSignals?.join("; "), x.shutdownClean === false && "unclean shutdown", x.orderBreak && `order: ${x.orderBreak}`].filter(Boolean).join("; ")]),
     ),
   );
   for (const c of s.candidates) {

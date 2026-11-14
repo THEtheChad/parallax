@@ -179,6 +179,8 @@ export class LspClient {
     this.proc.stdin!.write(encodeFrame(msg));
   }
 
+  // `params` undefined: the message carries no params member (shutdown and exit take none, and
+  // tsc 7 rejects `params: null` for them).
   request(method: string, params: unknown, timeoutMs = this.#opts.requestTimeoutMs): Promise<Answer> {
     if (this.#exit) return Promise.reject(new ServerExited(this.#exit, method));
     const id = this.#nextId++;
@@ -192,12 +194,12 @@ export class LspClient {
         : undefined;
       this.#pending.set(id, { method, start, resolve, reject, timer });
     });
-    this.#write({ jsonrpc: "2.0", id, method, params });
+    this.#write({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) });
     return promise;
   }
 
   notify(method: string, params: unknown): void {
-    this.#write({ jsonrpc: "2.0", method, params });
+    this.#write({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) });
   }
 
   // Kills the server's whole process group.
@@ -213,15 +215,16 @@ export class LspClient {
   }
 
   // shutdown, exit, then a kill of the process group if it has not exited after `graceMs`.
-  // Returns whether the server answered shutdown and exited on its own.
-  async shutdown({ graceMs = 5000 } = {}): Promise<{ exit: ExitInfo; clean: boolean }> {
+  // clean: the server answered shutdown without an error, then exited on its own with one of
+  // `exitCodes` (a profile's shutdown.exitCodes).
+  async shutdown({ graceMs = 5000, exitCodes = [0] }: { graceMs?: number; exitCodes?: number[] } = {}): Promise<{ exit: ExitInfo; clean: boolean }> {
     let answered = false;
     if (!this.#exit) {
       try {
-        const r = await this.request("shutdown", null, graceMs);
+        const r = await this.request("shutdown", undefined, graceMs);
         answered = r.error === undefined;
       } catch {}
-      this.notify("exit", null);
+      this.notify("exit", undefined);
       this.proc.stdin!.end();
     }
     let killed = false;
@@ -233,6 +236,6 @@ export class LspClient {
     clearTimeout(timer);
     // A worker left behind in the group (launcher process model).
     this.kill();
-    return { exit, clean: answered && !killed && exit.code === 0 };
+    return { exit, clean: answered && !killed && exit.code !== null && exitCodes.includes(exit.code) };
   }
 }

@@ -9,5 +9,6 @@
   "processModel": "launcher+worker",
   "libraryFiles": { "uriPrefix": "bundled:///libs/" },
   "crash": { "exitCodes": [70], "stderr": ["panicked at ", "^thread '.*' panicked"] },
+  "shutdown": { "exitCodes": [0] },
   "knownGaps": []
 }
