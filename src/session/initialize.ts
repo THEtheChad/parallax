@@ -2,6 +2,7 @@
 // as initializationOptions so no server needs a workspace/configuration round trip. Identical to the
 // tsc-rs fork's scripts/lspdiff/client.mjs, so answers compare with today's runs.
 
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const fileUri = (path: string): string => pathToFileURL(path).href;
@@ -77,3 +78,8 @@ export function initializeParams(rootDir: string): Record<string, unknown> {
     },
   };
 }
+
+// The session definition's initialize request, independent of the project root and of the current
+// directory (an absolute placeholder root, so pathToFileURL does not resolve it against the cwd).
+export const initializeSha256 = (): string =>
+  createHash("sha256").update(JSON.stringify(initializeParams("/<root>"))).digest("hex");

@@ -7,12 +7,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { loadavg } from "node:os";
 import { join, resolve } from "node:path";
-import { BUNDLE_SCHEMA, corpusInfo, harnessInfo, hostInfo, sha256, sideRecord, writeJsonAtomic, type Bundle, type RunRecord } from "../bundle/bundle.ts";
+import { BUNDLE_SCHEMA, corpusInfo, harnessInfo, hostInfo, sideRecord, writeJsonAtomic, type Bundle, type RunRecord } from "../bundle/bundle.ts";
 import { JsonlWriter, readLines } from "../bundle/lines.ts";
 import { compareBundle, type Summary } from "../diff/compare.ts";
 import { NORMALIZE_RULES, NORMALIZE_VERSION } from "../diff/normalize.ts";
 import { bindSide, type Side } from "../profile/profile.ts";
-import { initializeParams } from "../session/initialize.ts";
+import { initializeSha256 } from "../session/initialize.ts";
 import { pickFiles, rel } from "../session/picker.ts";
 import { TYPED } from "../session/script.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
@@ -63,7 +63,7 @@ export async function importLspdiff(opts: ImportOptions): Promise<{ dir: string;
     harness: harnessInfo(),
     host: hostInfo(),
     corpus: corpusInfo(root),
-    session: { script: "lspdiff-v1", files, positions: 4, typed: TYPED, initializeSha256: sha256(JSON.stringify(initializeParams("<root>"))), requestTimeoutMs: null },
+    session: { script: "lspdiff-v1", files, positions: 4, typed: TYPED, initializeSha256: initializeSha256(), requestTimeoutMs: null },
     normalization: { version: NORMALIZE_VERSION, rules: NORMALIZE_RULES },
     sides: [sideRecord(ref), sideRecord(cand)],
     runs: [],

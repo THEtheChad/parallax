@@ -23,7 +23,7 @@ import { compareBundle, type Summary } from "../diff/compare.ts";
 import { NORMALIZE_RULES, NORMALIZE_VERSION } from "../diff/normalize.ts";
 import { runServer } from "../lsp/run.ts";
 import { bindSide, type Side } from "../profile/profile.ts";
-import { initializeParams } from "../session/initialize.ts";
+import { initializeSha256 } from "../session/initialize.ts";
 import { pickFiles, rel } from "../session/picker.ts";
 import { SCRIPT_ID, TYPED, type ScriptSpec } from "../session/script.ts";
 
@@ -76,7 +76,7 @@ export async function lspDiff(opts: LspDiffOptions): Promise<{ dir: string; bund
       files: files.map((f) => rel(root, f)),
       positions: opts.positions,
       typed: TYPED,
-      initializeSha256: sha256(JSON.stringify(initializeParams("<root>"))),
+      initializeSha256: initializeSha256(),
       requestTimeoutMs: opts.requestTimeoutMs ?? null,
     },
     normalization: { version: NORMALIZE_VERSION, rules: NORMALIZE_RULES },

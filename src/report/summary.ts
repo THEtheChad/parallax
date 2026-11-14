@@ -11,8 +11,8 @@ function table(header: string[], rows: string[][]): string {
 export function renderSummary(s: Summary, { attentionLimit = 30 } = {}): string {
   const out: string[] = [];
   out.push(`${s.requests} requests; reference runs ${s.refRuns.join(", ")}; ${s.refUnstable} reference-unstable`);
-  for (const e of s.refEvidence ?? [])
-    out.push(`reference evidence ${e.bundle}: ${e.accepted ? `${e.refRuns.length} runs, ${s.refUnstableFromEvidence} requests unstable only with it` : `rejected (${e.reason})`}`);
+  for (const e of s.refEvidence ?? []) out.push(`reference evidence ${e.bundle}: ${e.accepted ? `${e.refRuns.length} reference runs` : `rejected (${e.reason})`}`);
+  if (s.refEvidence?.some((e) => e.accepted)) out.push(`${s.refUnstableFromEvidence} requests reference-unstable only with the evidence`);
   out.push(`normalization ${s.normalization.version} (${s.normalization.rules.join(", ")})`);
   out.push("");
   out.push(
