@@ -23,6 +23,18 @@ test("validation names the broken field", () => {
   );
 });
 
+test("side specs: a label before the profile, never a Windows drive letter", async () => {
+  const { bindSide } = await import("../src/profile/profile.ts");
+  const bin = process.execPath;
+  assert.equal((await bindSide(`tsc7=${bin}`, "ref")).label, "tsc7");
+  assert.equal((await bindSide(`go:tsc7=${bin}`, "ref")).label, "go");
+  const path = loadProfile("tsc7").path;
+  assert.equal((await bindSide(`${path}=${bin}`, "ref")).label, "tsc7");
+  // A drive-letter path is a path, not label "C" (rejected only because the file does not exist).
+  await assert.rejects(bindSide(`C:\\no\\such.json=${bin}`, "ref"), /no profile/);
+  await assert.rejects(bindSide(`C:/no/such.json=${bin}`, "ref"), /no profile/);
+});
+
 test("crash signatures from exit code and stderr", () => {
   const { profile } = loadProfile("tsc-rs-fork");
   assert.deepEqual(crashSignals(profile, 0, "fine\n"), []);

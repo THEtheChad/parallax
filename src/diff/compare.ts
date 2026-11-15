@@ -24,7 +24,7 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import type { Bundle, RunRecord, SideRecord } from "../bundle/bundle.ts";
 import { readBundle, writeJsonAtomic } from "../bundle/bundle.ts";
 import { JsonlWriter, readLines, readRange } from "../bundle/lines.ts";
@@ -280,7 +280,7 @@ export async function compareBundle(bundleDir: string, bundle: Bundle, opts: Com
       const m = (sum.byMethod[e.method] ??= {});
       m[v] = (m[v] ?? 0) + 1;
       if (ATTENTION.has(v)) {
-        const file = join("differences", label, `${String(sum.attention.length + 1).padStart(4, "0")}.json`);
+        const file = posix.join("differences", label, `${String(sum.attention.length + 1).padStart(4, "0")}.json`);
         sum.attention.push({ key, step: e.step, method: e.method, verdict: v, detail: file });
         detailJobs.push({ cand: label, key, verdict: v, file });
       }

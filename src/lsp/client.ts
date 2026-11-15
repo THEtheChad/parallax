@@ -7,6 +7,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
+import { killTree, treeSpawnOptions } from "../host/processTree.ts";
 import { FrameReader, encodeFrame } from "./framing.ts";
 
 export interface Answer {
@@ -84,7 +85,7 @@ export class LspClient {
     const [bin, ...args] = command;
     if (!bin) throw new Error("empty server command");
     this.#opts = opts;
-    this.proc = spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    this.proc = spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], ...treeSpawnOptions() });
     this.exited = new Promise((resolve) => {
       this.proc.on("exit", (code, signal) => {
         this.#exit = { code, signal };
@@ -202,16 +203,9 @@ export class LspClient {
     this.#write({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) });
   }
 
-  // Kills the server's whole process group.
+  // Kills the server and the processes it started (see host/processTree.ts).
   kill(signal: NodeJS.Signals = "SIGKILL"): void {
-    if (this.proc.pid === undefined) return;
-    try {
-      process.kill(-this.proc.pid, signal);
-    } catch {
-      try {
-        this.proc.kill(signal);
-      } catch {}
-    }
+    killTree(this.proc.pid, signal);
   }
 
   // shutdown, exit, then a kill of the process group if it has not exited after `graceMs`.

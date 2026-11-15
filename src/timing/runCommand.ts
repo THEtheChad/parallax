@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { detectAccounting, type ChildUsage } from "../host/accounting.ts";
 import { cpuSnapshot, cpuWindow, outsideCores, type CpuWindow } from "../host/machine.ts";
 import { GroupTracker, groupTrackingAvailable, type GroupUsage } from "../host/procGroup.ts";
+import { killTree, treeSpawnOptions } from "../host/processTree.ts";
 
 export interface CommandRun {
   startedAt: string;
@@ -56,7 +57,7 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
   const startedAt = new Date().toISOString();
   const before = cpuSnapshot();
   const t0 = performance.now();
-  const child = spawn(cmd!, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const child = spawn(cmd!, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], ...treeSpawnOptions() });
   child.stdout.on("data", (b: Buffer) => out.push(b));
   child.stderr.on("data", (b: Buffer) => err.push(b));
   const tracker = groupTrackingAvailable() ? new GroupTracker(child.pid!) : null;
@@ -64,11 +65,7 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    try {
-      process.kill(-child.pid!, "SIGKILL");
-    } catch {
-      // already gone
-    }
+    killTree(child.pid);
   }, opts.timeoutMs);
   let wallMs = 0;
   let after = before;
@@ -85,11 +82,7 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
   const drainMs = performance.now() - t0;
   clearTimeout(timer);
   // Leftover workers (a launcher that exited without waiting) must not overlap the next run.
-  try {
-    process.kill(-child.pid!, "SIGKILL");
-  } catch {
-    // none left
-  }
+  killTree(child.pid);
   const reportText = existsSync(report) ? readFileSync(report, "utf8") : "";
   const usage = reportText ? accounting.parse(reportText) : null;
   // Through `time`, a command killed by a signal shows up as time's own exit status.

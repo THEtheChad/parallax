@@ -112,6 +112,13 @@ alone. Without `time`, CPU and memory are blank,
 and the idle wait and canary are the only guards. On Linux the bundle also records system-wide CPU
 pressure (`/proc/pressure/cpu`).
 
+Run on a project on the machine's own disk. From WSL, a project under `/mnt/c` is read through a
+slow file share (a check that takes 230 ms on Windows took 2 s from WSL), so the bench would time the
+share, not the checker.
+
+Windows is checked from WSL with `scripts/windows-check.sh` (the test suite on Windows Node). An A/A
+bench there (tsc 7 against itself) gave 1.01x (0.98x..1.02x), "indistinguishable", as it should.
+
 ## Profiles
 
 `profiles/tsc7.json`, `profiles/tsrs.json`, `profiles/tsc-rs-fork.json`. A profile declares the

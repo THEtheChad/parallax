@@ -2,7 +2,7 @@
 // tsc-rs fork's scripts/lspdiff/project.mjs, so a session here asks what that tool asked.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 export interface Position {
   line: number;
@@ -89,5 +89,7 @@ export function pickPositions(text: string, count: number): { idents: Position[]
   };
 }
 
-export const rel = (root: string, path: string): string => relative(root, path);
+// Project-relative paths as bundles store them: "/"-separated on every OS, so a session defined on
+// Windows is the same session as on Linux.
+export const rel = (root: string, path: string): string => relative(root, path).split(sep).join("/");
 export const readText = (path: string): string => readFileSync(path, "utf8");

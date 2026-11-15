@@ -124,6 +124,11 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     notes: [],
   };
   if (accounting.startsWith("none")) bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
+  if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root)) {
+    const note = "the project is on the Windows disk, read from WSL through a slow file share: times include the share";
+    bundle.notes.push(note);
+    opts.log(`warning: ${note}`);
+  }
   const save = (): void => writeJsonAtomic(join(dir, "bundle.json"), bundle);
   save();
   opts.log(`bundle ${dir}\nproject ${root} (${settings.config}); accounting ${accounting}`);
