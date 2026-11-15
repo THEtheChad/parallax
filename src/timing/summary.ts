@@ -29,6 +29,9 @@ export interface SampleRecord {
   cpuMs: number | null;
   userMs: number | null;
   sysMs: number | null;
+  // Linux: CPU of processes nobody in the group waited for (included in cpuMs), and how many.
+  adoptedCpuMs: number | null;
+  adopted: number | null;
   maxRssBytes: number | null;
   window: CpuWindow;
   outsideCores: number | null;

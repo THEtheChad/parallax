@@ -55,7 +55,7 @@ test("bench: alternating rounds, paired ratios, outputs compared, every sample k
   assert.equal(sides["fake-check-fast"]!.outputMatchesRef, true);
   assert.equal(sides["fake-check-other"]!.outputMatchesRef, false);
   assert.deepEqual(sides["fake-check-ref"]!.exitCodes, [2], "a checker's error exit is not a failure");
-  if (bundle.host.accounting !== "none") {
+  if (!bundle.host.accounting.startsWith("none")) {
     assert.ok(sides["fake-check-ref"]!.cpuMs!.estimate >= 150, "CPU of the child is accounted");
     assert.ok(sides["fake-check-ref"]!.maxRssBytes! > 1 << 20);
     assert.ok(other!.cpuRatio !== null);
@@ -68,6 +68,30 @@ test("bench: alternating rounds, paired ratios, outputs compared, every sample k
   const strict = summarizeBenchBundle(dir, readBenchBundle(dir), { maxOutsideCores: Infinity, maxCanaryDrift: -1 });
   assert.equal(strict.rounds.accepted, 0);
   assert.equal(strict.candidates[0]!.state, "noisy");
+});
+
+test("bench: a worker its launcher never waits for is still accounted", async () => {
+  const { bundle, summary } = await bench({
+    project: makeProject(),
+    out: join(mkdtempSync(join(tmpdir(), "parallax-bench-")), "b"),
+    ref: side("fake-check-ref"),
+    cands: [side("fake-check-launcher")],
+    runs: 1,
+    minRounds: 1,
+    warmup: 0,
+    attempts: 1,
+    log: quiet,
+    ...open,
+  });
+  const launcher = summary.sides.find((s) => s.label === "fake-check-launcher")!;
+  if (bundle.host.accounting === "gnu-time+proc") {
+    // `time` alone sees only the launcher's few milliseconds; the worker spun for 300 ms.
+    assert.ok(launcher.cpuMs!.estimate >= 250, `cpu ${launcher.cpuMs!.estimate}`);
+    assert.ok(launcher.maxRssBytes! > 20 << 20, "the worker's memory, not just the launcher's");
+  } else {
+    assert.equal(launcher.cpuMs, null, "unknown rather than the launcher's share alone");
+  }
+  assert.equal(launcher.outputMatchesRef, true);
 });
 
 test("bench: a crashing candidate is failed, and the CLI exits 1", () => {

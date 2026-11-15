@@ -27,6 +27,7 @@ import {
 } from "../bundle/bundle.ts";
 import { JsonlWriter } from "../bundle/lines.ts";
 import { detectAccounting } from "../host/accounting.ts";
+import { groupTrackingAvailable } from "../host/procGroup.ts";
 import { cpuSnapshot, cpuWindow, DEFAULT_IDLE_GATE, hostLoad, outsideCores, waitForIdle, type HostLoad, type IdleGate } from "../host/machine.ts";
 import { bindSide, crashSignals, expand, type Side } from "../profile/profile.ts";
 import { CANARY_SIZE, CANARY_VERSION, runCanary } from "../timing/canary.ts";
@@ -107,7 +108,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   const dir = prepareBundleDir(opts.out);
   const outputsDir = join(dir, "outputs");
   mkdirSync(outputsDir);
-  const accounting = detectAccounting().kind;
+  const accounting = `${detectAccounting().kind}${groupTrackingAvailable() ? "+proc" : ""}`;
   const bundle: BenchBundle = {
     schema: BUNDLE_SCHEMA,
     kind: "cli-bench",
@@ -122,7 +123,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     sides: sides.map((s) => ({ ...sideRecord(s), checkCommand: commands.get(s.label)! })),
     notes: [],
   };
-  if (accounting === "none") bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
+  if (accounting.startsWith("none")) bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
   const save = (): void => writeJsonAtomic(join(dir, "bundle.json"), bundle);
   save();
   opts.log(`bundle ${dir}\nproject ${root} (${settings.config}); accounting ${accounting}`);
@@ -130,7 +131,10 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   const writer = new JsonlWriter(join(dir, "samples.jsonl"));
   const sample = async (side: Side, round: number, attempt: number, warmup: boolean): Promise<SampleRecord> => {
     const r = await runCommand({ command: commands.get(side.label)!, cwd: root, env: side.env.env, timeoutMs: settings.timeoutMs, outputsDir });
-    const { stderrTail, usage, ...rest } = r;
+    const { stderrTail, usage, group, cpuMs, maxRssBytes, ...rest } = r;
+    // A launcher that leaves its worker unreaped hides the worker from `time`; without /proc to find
+    // it, the CPU and memory figures would be the launcher's alone, so they are unknown instead.
+    const blind = side.profile.processModel === "launcher+worker" && group === null;
     const rec: SampleRecord = {
       type: "sample",
       side: side.label,
@@ -141,10 +145,12 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
       ...rest,
       // Exit codes are not crash signs for a checker: tsc exits non-zero when it reports errors.
       crashSignals: crashSignals(side.profile, null, stderrTail),
-      cpuMs: usage ? usage.userMs + usage.sysMs : null,
-      userMs: usage?.userMs ?? null,
-      sysMs: usage?.sysMs ?? null,
-      maxRssBytes: usage?.maxRssBytes ?? null,
+      cpuMs: blind ? null : cpuMs,
+      userMs: blind ? null : (usage?.userMs ?? null),
+      sysMs: blind ? null : (usage?.sysMs ?? null),
+      adoptedCpuMs: group?.adoptedCpuMs ?? null,
+      adopted: group?.adopted ?? null,
+      maxRssBytes: blind ? null : maxRssBytes,
     };
     await writer.write(rec);
     return rec;

@@ -104,7 +104,11 @@ sample and round, rejected ones included; other gates can be tried after the fac
 What works where: wall time, the idle wait, the canary and the ratios use only Node and work on any
 OS. The commands' own CPU and peak memory (and so outside load) come from `/usr/bin/time` where one
 works: GNU time on Linux, BSD time on macOS (it is detected by running it once, and
-`PARALLAX_ACCOUNTING=none|gnu-time|bsd-time` forces a choice). Without it, CPU and memory are blank,
+`PARALLAX_ACCOUNTING=none|gnu-time|bsd-time` forces a choice). On Linux the
+measured command's process group is also tracked through `/proc`, so a worker its launcher never
+waits for (the tsc-rs fork's model; `time` cannot see it) is still counted. Elsewhere a
+`launcher+worker` profile's CPU and memory are left blank rather than reported as the launcher's
+alone. Without `time`, CPU and memory are blank,
 and the idle wait and canary are the only guards. On Linux the bundle also records system-wide CPU
 pressure (`/proc/pressure/cpu`).
 

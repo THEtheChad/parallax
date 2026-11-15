@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectAccounting, type ChildUsage } from "../host/accounting.ts";
 import { cpuSnapshot, cpuWindow, outsideCores, type CpuWindow } from "../host/machine.ts";
+import { GroupTracker, groupTrackingAvailable, type GroupUsage } from "../host/procGroup.ts";
 
 export interface CommandRun {
   startedAt: string;
@@ -21,7 +22,13 @@ export interface CommandRun {
   stdoutSha256: string;
   stderrSha256: string;
   outputLines: number;
+  // From `time`: the top process and every descendant it (transitively) waited for.
   usage: ChildUsage | null;
+  // Linux: processes in the group nobody waited for (a launcher's worker), from /proc.
+  group: GroupUsage | null;
+  // usage + group: the command's whole CPU and largest process, or null when unknown.
+  cpuMs: number | null;
+  maxRssBytes: number | null;
   window: CpuWindow;
   outsideCores: number | null;
   // The end of stderr, for crash signatures (not stored in records; the whole stderr is in outputs/).
@@ -52,6 +59,8 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
   const child = spawn(cmd!, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   child.stdout.on("data", (b: Buffer) => out.push(b));
   child.stderr.on("data", (b: Buffer) => err.push(b));
+  const tracker = groupTrackingAvailable() ? new GroupTracker(child.pid!) : null;
+  let group: GroupUsage | null = null;
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -67,6 +76,7 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       wallMs = performance.now() - t0;
+      group = tracker?.finish() ?? null;
       after = cpuSnapshot();
       resolve({ code, signal });
     });
@@ -97,6 +107,9 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
     }
   }
   const window = cpuWindow(before, after);
+  const g = group as GroupUsage | null;
+  const cpuMs = usage ? usage.userMs + usage.sysMs + (g?.adoptedCpuMs ?? 0) : null;
+  const maxRssBytes = usage ? Math.max(usage.maxRssBytes, g?.maxHwmBytes ?? 0) : null;
   return {
     startedAt,
     wallMs,
@@ -107,8 +120,11 @@ export async function runCommand(opts: RunCommandOptions): Promise<CommandRun> {
     stderrSha256,
     outputLines: stdout.length ? stdout.toString("utf8").split("\n").filter(Boolean).length : 0,
     usage,
+    group: g,
+    cpuMs,
+    maxRssBytes,
     window,
-    outsideCores: outsideCores(window, usage ? usage.userMs + usage.sysMs : null),
+    outsideCores: outsideCores(window, cpuMs),
     stderrTail: stderr.subarray(Math.max(0, stderr.length - (1 << 16))).toString("utf8"),
   };
 }

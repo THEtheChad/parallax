@@ -75,6 +75,8 @@ function bench(rounds: { ref: number; cand: number; canary: number; outside?: nu
       cpuMs: wallMs * 4,
       userMs: wallMs * 4,
       sysMs: 0,
+      adoptedCpuMs: null,
+      adopted: null,
       maxRssBytes: 1 << 20,
       window: win,
       outsideCores: 0,
