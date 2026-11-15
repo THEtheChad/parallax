@@ -6,7 +6,8 @@ Parallax checks a candidate compiler or language server against a reference (tod
 port) for identical output, then measures speed. It is binary-agnostic: everything specific to one
 product lives in a profile, and every result is an evidence bundle that reports are rendered from.
 
-Status: early and private. What exists is the language-server answer diff (`lsp-diff`).
+Status: early and private. What exists is the language-server answer diff (`lsp-diff`) and the
+command-line check timer (`bench`).
 
 ## Setup
 
@@ -71,10 +72,47 @@ differences/       one file per difference: completion items only on one side, o
 Answers are streamed to disk and compared by hash, so a session's size is bounded by the disk, not
 by memory.
 
+## Timing checks
+
+```sh
+pnpm parallax bench --project <dir> --config tsconfig.json \
+  --ref tsc7=<tsc7-binary> --cand tsrs=<tsrs-binary> --cand tsc-rs-fork=<fork-binary> \
+  --out <bundle-dir>
+```
+
+Times each side's `check` command (from its profile) on one project. Raw times on a shared machine
+move with whatever else runs, so the bench does not try to correct them; it measures the disturbance
+and keeps only rounds that were not disturbed:
+
+- **Rounds.** Each round runs every side once, back to back, alternating the order (ref, A, B, then
+  B, A, ref). Candidates are compared by their time divided by the reference's time *in the same
+  round*, so load that is steady across a round cancels. Results are medians with 95% bootstrap
+  intervals; a candidate is `faster` or `slower` only when the whole interval is on one side of 1.
+- **Idle wait.** Before each round, wait until other programs use at most `--max-busy-cores` (1.5).
+- **Outside load.** Machine CPU during the round minus the harness's and the measured commands' own
+  CPU. A round where other programs used more than `--max-outside-cores` (1) is rejected and retried.
+- **Canary.** A fixed workload timed before and after each round. A round whose canary ran more than
+  `--max-canary-drift` (10%) slower than the fastest canary of the bench is rejected: the machine
+  changed speed (clock boost, heat, or load the OS cannot see, such as a VM host).
+- **Not enough clean rounds** (`--min-runs`, 3) makes a candidate `noisy` instead of giving a number.
+  A crash, signal or timeout makes it `failed`. Each side's output must be the same on every run; it is
+  also compared with the reference's.
+
+`parallax bench-summary <bundle-dir>` recomputes the summary from `samples.jsonl`, which keeps every
+sample and round, rejected ones included; other gates can be tried after the fact.
+
+What works where: wall time, the idle wait, the canary and the ratios use only Node and work on any
+OS. The commands' own CPU and peak memory (and so outside load) come from `/usr/bin/time` where one
+works: GNU time on Linux, BSD time on macOS (it is detected by running it once, and
+`PARALLAX_ACCOUNTING=none|gnu-time|bsd-time` forces a choice). Without it, CPU and memory are blank,
+and the idle wait and canary are the only guards. On Linux the bundle also records system-wide CPU
+pressure (`/proc/pressure/cpu`).
+
 ## Profiles
 
 `profiles/tsc7.json`, `profiles/tsrs.json`, `profiles/tsc-rs-fork.json`. A profile declares the
-language-server command (`{bin}` is the bound binary), environment variables to clear or set, the
+language-server command (`{bin}` is the bound binary), the check command for `bench` (`{config}` is
+`--config`), environment variables to clear or set, the
 process model, where bundled library files appear in answers, and crash signatures. Bind one to a
 binary on the command line with `<profile>=<binary>` (or `<label>:<profile>=<binary>` to use one
 profile twice); a profile can also be a path to a JSON file.
