@@ -1,9 +1,7 @@
 // `parallax bench`: time each side's check command (the profile's `check`) on one project.
 //
 //   warm-up   each side runs `warmup` times; recorded, never measured
-//   rounds    wait for an idle machine, canary, every side once, canary; the order alternates
-//             (ref, A, B / B, A, ref / ...) so no side always runs first or after the same neighbour
-//   retries   a disturbed round (see timing/summary.ts) is run again, up to `attempts` times
+//   rounds    see timing/rounds.ts: idle wait, canaries, alternating order, retries of disturbed rounds
 //   result    per side: median wall, CPU and peak memory over accepted rounds with intervals; per
 //             candidate: the median of its per-round ratio to the reference, with an interval, and
 //             "noisy" instead of a number when fewer than `minRounds` rounds were accepted
@@ -28,11 +26,12 @@ import {
 import { JsonlWriter } from "../bundle/lines.ts";
 import { detectAccounting } from "../host/accounting.ts";
 import { groupTrackingAvailable } from "../host/procGroup.ts";
-import { cpuSnapshot, cpuWindow, DEFAULT_IDLE_GATE, hostLoad, outsideCores, waitForIdle, type HostLoad, type IdleGate } from "../host/machine.ts";
+import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
 import { bindSide, crashSignals, expand, type Side } from "../profile/profile.ts";
-import { CANARY_SIZE, CANARY_VERSION, runCanary } from "../timing/canary.ts";
+import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
+import { runRounds } from "../timing/rounds.ts";
 import { runCommand } from "../timing/runCommand.ts";
-import { DEFAULT_GATES, judgeRound, summarizeBench, type BenchSummary, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
+import { DEFAULT_GATES, summarizeBench, type BenchSummary, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
 
 export interface BenchSettings {
@@ -124,6 +123,11 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     notes: [],
   };
   if (accounting.startsWith("none")) bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
+  const lowered = priorityNote(bundle.host.load);
+  if (lowered) {
+    bundle.notes.push(lowered);
+    opts.log(`warning: ${lowered}`);
+  }
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root)) {
     const note = "the project is on the Windows disk, read from WSL through a slow file share: times include the share";
     bundle.notes.push(note);
@@ -161,37 +165,20 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     return rec;
   };
 
-  runCanary(); // warm the canary's code before its first timed use
-  let fastestCanary = Infinity;
   for (let w = 1; w <= settings.warmup; w++) for (const s of sides) await sample(s, 0, w, true);
-
-  for (let round = 1; round <= settings.runs; round++) {
-    const order = round % 2 ? sides : [...sides].reverse();
-    for (let attempt = 1; attempt <= settings.attempts; attempt++) {
-      const idle = await waitForIdle(settings.idle, opts.log);
-      const before = cpuSnapshot();
-      const canaryBeforeMs = runCanary().ms;
-      const ss: SampleRecord[] = [];
-      for (const s of order) ss.push(await sample(s, round, attempt, false));
-      const canaryAfterMs = runCanary().ms;
-      const window = cpuWindow(before, cpuSnapshot());
-      const cpu = ss.every((s) => s.cpuMs !== null) ? ss.reduce((t, s) => t + s.cpuMs!, 0) : null;
-      fastestCanary = Math.min(fastestCanary, canaryBeforeMs, canaryAfterMs);
-      const partial = { idle, outsideCores: outsideCores(window, cpu), canaryBeforeMs, canaryAfterMs };
-      const rejected = judgeRound(partial, fastestCanary, settings.gates);
-      const failed = ss.filter((s) => s.timedOut || s.exit.signal !== null || s.crashSignals.length);
-      const rec: RoundRecord = { type: "round", round, attempt, order: order.map((s) => s.label), window, ...partial, rejected };
-      await writer.write(rec);
-      const times = ss.map((s) => `${s.side} ${fmtMs(s.wallMs)}`).join(", ");
-      const other = partial.outsideCores === null ? "" : `, other ${partial.outsideCores.toFixed(2)} cores`;
-      opts.log(`round ${round}.${attempt}: ${times} (canary ${canaryBeforeMs.toFixed(1)}/${canaryAfterMs.toFixed(1)} ms${other})${rejected.length ? ` rejected: ${rejected.join("; ")}` : ""}`);
-      if (failed.length) {
-        opts.log(`round ${round}: ${failed.map((s) => s.side).join(", ")} failed; not retried`);
-        break;
-      }
-      if (!rejected.length) break;
-    }
-  }
+  await runRounds({
+    sides,
+    runs: settings.runs,
+    attempts: settings.attempts,
+    idle: settings.idle,
+    gates: settings.gates,
+    writer,
+    log: opts.log,
+    run: async (side, round, attempt) => {
+      const s = await sample(side, round, attempt, false);
+      return { cpuMs: s.cpuMs, failed: s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0, brief: fmtMs(s.wallMs) };
+    },
+  });
   await writer.close();
 
   const after = corpusState(root);

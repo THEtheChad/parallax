@@ -120,28 +120,51 @@ export interface SummarizeInput {
   accounting: string;
 }
 
-export function summarizeBench(input: SummarizeInput): BenchSummary {
-  const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
-  const samples = input.records.filter((r): r is SampleRecord => r.type === "sample");
+export interface AcceptedRounds<T> {
+  // The fastest canary of the bench: the baseline every round is judged against.
+  baseline: number | null;
+  // One entry per accepted round: its measured samples, one per side.
+  accepted: T[][];
+  attempts: number;
+  failed: number;
+  rejected: number;
+  rejections: Record<string, number>;
+}
+
+// Sorts rounds into accepted, rejected (disturbed) and failed (a side failed, or a sample is missing),
+// judging each against the fastest canary of the whole bench. Warm-up samples are left out by the caller.
+export function acceptRounds<T extends { round: number; attempt: number }>(
+  rounds: RoundRecord[],
+  samples: T[],
+  sides: number,
+  failed: (s: T) => boolean,
+  gates: Gates,
+): AcceptedRounds<T> {
   const canaries = rounds.flatMap((r) => [r.canaryBeforeMs, r.canaryAfterMs]);
   const baseline = canaries.length ? Math.min(...canaries) : null;
   const key = (round: number, attempt: number): string => `${round}.${attempt}`;
-  const byRound = new Map<string, SampleRecord[]>();
-  for (const s of samples) if (!s.warmup) byRound.set(key(s.round, s.attempt), [...(byRound.get(key(s.round, s.attempt)) ?? []), s]);
-
+  const byRound = new Map<string, T[]>();
+  for (const s of samples) byRound.set(key(s.round, s.attempt), [...(byRound.get(key(s.round, s.attempt)) ?? []), s]);
   const rejections: Record<string, number> = {};
-  const accepted: SampleRecord[][] = [];
+  const accepted: T[][] = [];
   let failedRounds = 0;
   for (const r of rounds) {
     const ss = byRound.get(key(r.round, r.attempt)) ?? [];
-    if (ss.some(failed) || ss.length < input.sides.length) {
+    if (ss.some(failed) || ss.length < sides) {
       failedRounds++;
       continue;
     }
-    const reasons = judgeRound(r, baseline ?? r.canaryBeforeMs, input.gates);
+    const reasons = judgeRound(r, baseline ?? r.canaryBeforeMs, gates);
     for (const why of reasons) rejections[why] = (rejections[why] ?? 0) + 1;
     if (!reasons.length) accepted.push(ss);
   }
+  return { baseline, accepted, attempts: rounds.length, failed: failedRounds, rejected: rounds.length - accepted.length - failedRounds, rejections };
+}
+
+export function summarizeBench(input: SummarizeInput): BenchSummary {
+  const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
+  const samples = input.records.filter((r): r is SampleRecord => r.type === "sample");
+  const { baseline, accepted, ...counts } = acceptRounds(rounds, samples.filter((s) => !s.warmup), input.sides.length, failed, input.gates);
   const ref = input.sides.find((s) => s.role === "ref")!;
   const refOutputs = new Set(samples.filter((s) => s.side === ref.label).map((s) => `${s.exit.code}:${s.stdoutSha256}`));
 
@@ -181,10 +204,10 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
   return {
     schema: "parallax.bench-summary/1",
     canaryBaselineMs: baseline,
-    rounds: { planned: input.plannedRounds, attempts: rounds.length, accepted: accepted.length, rejected: rounds.length - accepted.length - failedRounds, failed: failedRounds },
+    rounds: { planned: input.plannedRounds, attempts: counts.attempts, accepted: accepted.length, rejected: counts.rejected, failed: counts.failed },
     minRounds: input.minRounds,
     gates: input.gates,
-    rejections,
+    rejections: counts.rejections,
     accounting: input.accounting,
     sides,
     candidates,
