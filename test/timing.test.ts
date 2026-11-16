@@ -16,7 +16,8 @@ test("quantiles interpolate; the bootstrap is deterministic and brackets the med
   assert.ok(a.low <= 0.5 && a.high >= 0.5 && a.high < 1);
   assert.equal(callOf(a), "faster");
   assert.equal(callOf({ ...a, low: 0.9, high: 1.05 }), "indistinguishable");
-  assert.equal(callOf({ ...a, low: 1.1, high: 1.3 }), "slower");
+  assert.equal(callOf({ ...a, estimate: 1.2, low: 1.1, high: 1.3 }), "slower");
+  assert.equal(callOf({ ...a, estimate: 1.0005, low: 1.0001, high: 1.001 }), "indistinguishable", "too small to matter");
   assert.equal(bootstrapMedian([]), null);
 });
 

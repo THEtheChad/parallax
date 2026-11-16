@@ -7,7 +7,7 @@
 // lags by a minute, counts our own processes, and is always 0 on Windows.
 
 import { readFileSync } from "node:fs";
-import { cpus, loadavg, platform, uptime } from "node:os";
+import { cpus, getPriority, loadavg, platform, uptime } from "node:os";
 
 export interface CpuSnapshot {
   // performance.now() at the snapshot.
@@ -79,10 +79,34 @@ export interface HostLoad {
   loadavg: number[] | null;
   uptimeS: number;
   pressureAvailable: boolean;
+  // The harness's scheduling priority (a nice value, -20..19; Windows priority classes map onto it).
+  // Measured commands inherit it. Null when the OS would not say.
+  priority: number | null;
 }
 
+const ownPriority = (): number | null => {
+  try {
+    return getPriority();
+  } catch {
+    return null;
+  }
+};
+
 export function hostLoad(): HostLoad {
-  return { loadavg: platform() === "win32" ? null : loadavg(), uptimeS: Math.round(uptime()), pressureAvailable: readPressureUs() !== null };
+  return {
+    loadavg: platform() === "win32" ? null : loadavg(),
+    uptimeS: Math.round(uptime()),
+    pressureAvailable: readPressureUs() !== null,
+    priority: ownPriority(),
+  };
+}
+
+// A note for a bundle when the harness runs below normal priority: any other program that wants the
+// CPU then wins over the measured commands, and its load shows up in their times.
+export function priorityNote(load: HostLoad): string | null {
+  return load.priority !== null && load.priority > 0
+    ? `the harness ran at lowered priority (nice ${load.priority}): other programs that want the CPU are served before the measured commands`
+    : null;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

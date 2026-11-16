@@ -58,4 +58,8 @@ export function bootstrapMedian(
 // reference time): a claim needs the whole interval on one side of 1.
 export type Call = "faster" | "slower" | "indistinguishable";
 
-export const callOf = (ratio: Interval): Call => (ratio.high < 1 ? "faster" : ratio.low > 1 ? "slower" : "indistinguishable");
+// Faster or slower only when the whole interval is on one side of 1 and the estimate differs from 1 by
+// at least `minEffect` (1%): a difference too small to print is no difference.
+export const MIN_EFFECT = 0.01;
+export const callOf = (ratio: Interval, minEffect = MIN_EFFECT): Call =>
+  ratio.high < 1 && ratio.estimate <= 1 - minEffect ? "faster" : ratio.low > 1 && ratio.estimate >= 1 + minEffect ? "slower" : "indistinguishable";
