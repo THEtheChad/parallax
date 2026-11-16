@@ -5,6 +5,10 @@
 //   FAKE_CRASH_AFTER=<n>      after n answered requests, print a panic line and exit 70
 //   FAKE_UNSTABLE=1           documentHighlight answers vary from run to run
 //   FAKE_HUGE=<items>         the first completion list carries this many items (one huge answer)
+//   FAKE_WORK_MS=<ms>         each request costs this much CPU (a busy loop), one at a time from a queue,
+//                             like a single-threaded server; $/cancelRequest drops a queued request
+//                             (answered with RequestCancelled)
+//   FAKE_EDIT_WORK_MS=<ms>    the first request after a didChange costs this much more (the update)
 
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +62,39 @@ function answer(method: string, params: Record<string, any>): unknown {
   }
 }
 
+const workMs = Number(env.FAKE_WORK_MS ?? 0);
+const editWorkMs = Number(env.FAKE_EDIT_WORK_MS ?? 0);
+let dirty = false;
+const queue: { id: number; method: string; params: any }[] = [];
+let draining = false;
+
+const spin = (ms: number): void => {
+  const until = performance.now() + ms;
+  while (performance.now() < until);
+};
+
+function respond(id: number, method: string, params: any): void {
+  if (env.FAKE_CRASH_AFTER && answered >= Number(env.FAKE_CRASH_AFTER)) {
+    process.stderr.write("thread 'main' panicked at src/fake.rs:1:1:\nboom\n");
+    process.exit(70);
+  }
+  answered++;
+  send({ id, result: answer(method, params) });
+}
+
+// One queued request per turn of the event loop, so cancellations sent meanwhile are read.
+function drain(): void {
+  const next = queue.shift();
+  if (!next) {
+    draining = false;
+    return;
+  }
+  spin(workMs + (dirty ? editWorkMs : 0));
+  dirty = false;
+  respond(next.id, next.method, next.params);
+  setImmediate(drain);
+}
+
 const reader = new FrameReader();
 process.stdin.on("data", (chunk: Buffer) => {
   for (const { body } of reader.push(chunk)) {
@@ -67,6 +104,14 @@ process.stdin.on("data", (chunk: Buffer) => {
     if (msg.id === undefined) {
       if (msg.method === "initialized") send({ id: "cfg-1", method: "workspace/configuration", params: { items: [{ section: "typescript" }] } });
       if (msg.method === "textDocument/didOpen") send({ method: "textDocument/publishDiagnostics", params: { uri: msg.params.textDocument.uri, diagnostics: [] } });
+      if (msg.method === "textDocument/didChange") dirty = true;
+      if (msg.method === "$/cancelRequest") {
+        const i = queue.findIndex((q) => q.id === msg.params.id);
+        if (i >= 0) {
+          const [dropped] = queue.splice(i, 1);
+          send({ id: dropped!.id, error: { code: -32800, message: "Request cancelled" } });
+        }
+      }
       continue;
     }
     if (msg.method === "initialize") {
@@ -79,12 +124,14 @@ process.stdin.on("data", (chunk: Buffer) => {
       else send({ id: msg.id, result: null });
       continue;
     }
-    if (env.FAKE_CRASH_AFTER && answered >= Number(env.FAKE_CRASH_AFTER)) {
-      process.stderr.write("thread 'main' panicked at src/fake.rs:1:1:\nboom\n");
-      process.exit(70);
+    if (!workMs && !editWorkMs) {
+      respond(msg.id, msg.method, msg.params);
+      continue;
     }
-    answered++;
-    const result = answer(msg.method, msg.params);
-    send({ id: msg.id, result });
+    queue.push({ id: msg.id, method: msg.method, params: msg.params });
+    if (!draining) {
+      draining = true;
+      setImmediate(drain);
+    }
   }
 });

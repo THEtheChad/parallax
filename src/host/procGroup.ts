@@ -34,7 +34,7 @@ export interface GroupUsage {
 }
 
 let clockTicks: number | undefined;
-const ticksPerSecond = (): number => {
+export const ticksPerSecond = (): number => {
   if (clockTicks === undefined) {
     const r = spawnSync("getconf", ["CLK_TCK"], { encoding: "utf8" });
     const n = Number(r.stdout?.trim());
@@ -45,7 +45,7 @@ const ticksPerSecond = (): number => {
 
 export const groupTrackingAvailable = (): boolean => platform() === "linux" && existsSync("/proc/self/stat");
 
-function readStat(pid: string): { ppid: number; pgrp: number; ticks: number } | null {
+export function readStat(pid: string): { ppid: number; pgrp: number; ticks: number } | null {
   try {
     const s = readFileSync(`/proc/${pid}/stat`, "utf8");
     // Fields after the command name, which may itself contain spaces and parentheses.
@@ -56,7 +56,7 @@ function readStat(pid: string): { ppid: number; pgrp: number; ticks: number } | 
   }
 }
 
-function readHwm(pid: string): number {
+export function readHwm(pid: string): number {
   try {
     const m = /^VmHWM:\s+(\d+) kB/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
     return m ? Number(m[1]) * 1024 : 0;

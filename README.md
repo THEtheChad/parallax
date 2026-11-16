@@ -6,8 +6,8 @@ Parallax checks a candidate compiler or language server against a reference (tod
 port) for identical output, then measures speed. It is binary-agnostic: everything specific to one
 product lives in a profile, and every result is an evidence bundle that reports are rendered from.
 
-Status: early and private. What exists is the language-server answer diff (`lsp-diff`) and the
-command-line check timer (`bench`).
+Status: early and private. What exists is the language-server answer diff (`lsp-diff`), the
+command-line check timer (`bench`) and the language-server timer (`lsp-bench`).
 
 ## Setup
 
@@ -98,7 +98,7 @@ and keeps only rounds that were not disturbed:
   A crash, signal or timeout makes it `failed`. Each side's output must be the same on every run; it is
   also compared with the reference's.
 
-`parallax bench-summary <bundle-dir>` recomputes the summary from `samples.jsonl`, which keeps every
+`parallax bench-summary <bundle-dir>` recomputes the summary from `samples.jsonl` (for `lsp-bench` bundles too), which keeps every
 sample and round, rejected ones included; other gates can be tried after the fact.
 
 What works where: wall time, the idle wait, the canary and the ratios use only Node and work on any
@@ -118,6 +118,46 @@ share, not the checker.
 
 Windows is checked from WSL with `scripts/windows-check.sh` (the test suite on Windows Node). An A/A
 bench there (tsc 7 against itself) gave 1.01x (0.98x..1.02x), "indistinguishable", as it should.
+
+## Timing language servers
+
+```sh
+pnpm parallax lsp-bench --project <dir> \
+  --ref tsc7=<tsc7-binary> --cand tsrs=<tsrs-binary> --cand tsc-rs-fork=<fork-binary> \
+  --out <bundle-dir>
+```
+
+Times what someone using an editor waits for. Each round starts every side's server once (same rounds,
+idle wait, canary and gates as `bench`, and the same per-round ratio to the reference) and runs one
+session in three phases:
+
+- **open:** spawn, initialize, open the edited file and pull its diagnostics: time to first
+  diagnostics (from spawn), and the server's CPU so far. The other files are then opened and
+  checked once, untimed.
+- **edit:** `--edits` (20) one-character edits, each followed by a hover in another file (the first
+  request after an edit pays for the server's update), a second hover, and the edited file's
+  diagnostics. Server CPU per edit.
+- **typing:** a line typed at the end of the edited file at `--interval-ms` (120) per key, `--lines`
+  (4) times, sending what VS Code sends: a completion after `.` and at the start of a word, the edited
+  file's diagnostics every key, semantic tokens, inlay hints and the other files' diagnostics every
+  500 ms, a hover every 8 keys. Keys go out on schedule whether or not answers have come (open loop),
+  and latency is counted from when the key was due, so a server that falls behind is charged for its
+  queue. A new request in the same slot cancels the one in flight, as an editor does; cancelled
+  requests are counted, not timed. Server CPU per key.
+
+The files are picked as for `lsp-diff` (`--files 6`, or `--file <rel>` repeated; the first is edited).
+Every request of every session is kept in `runs/<side>.<round>.<attempt>.jsonl` with the times it
+was due, sent and answered.
+
+Server CPU and memory are read while the server runs, for its whole process group: through `/proc` on
+Linux (peak memory), through `ps` on macOS and other BSDs (memory at the end of the session; BSD
+`ps` has no peak), and not at all on Windows, where they are left blank. `PARALLAX_SERVER_USAGE=proc|ps|none`
+forces a choice. If the harness itself sends keys late (a busy client machine), the bundle says so.
+
+## Calls
+
+A candidate is `faster` or `slower` only when the whole 95% interval of its ratio is on one side of
+1 and the ratio differs from 1 by at least 1%; otherwise it is `indistinguishable`.
 
 ## Profiles
 

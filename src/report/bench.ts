@@ -3,15 +3,15 @@
 import type { BenchSummary } from "../timing/summary.ts";
 import type { Interval } from "../timing/stats.ts";
 
-function table(header: string[], rows: string[][]): string {
+export function table(header: string[], rows: string[][]): string {
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? "").length)));
   const line = (cells: string[]): string => cells.map((c, i) => (i === 0 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ");
   return [line(header), widths.map((w) => "-".repeat(w)).join("  "), ...rows.map(line)].join("\n");
 }
 
-const ms = (v: number): string => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(v < 10 ? 1 : 0)} ms`);
-const withInterval = (i: Interval | null, f: (v: number) => string): string => (i ? `${f(i.estimate)} (${f(i.low)}..${f(i.high)})` : "-");
-const ratio = (v: number): string => `${v.toFixed(2)}x`;
+export const ms = (v: number): string => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(v < 10 ? 1 : 0)} ms`);
+export const withInterval = (i: Interval | null, f: (v: number) => string): string => (i ? `${f(i.estimate)} (${f(i.low)}..${f(i.high)})` : "-");
+export const ratio = (v: number): string => `${v.toFixed(2)}x`;
 
 export function renderBenchSummary(s: BenchSummary): string {
   const out: string[] = [];
