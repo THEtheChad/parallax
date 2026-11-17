@@ -31,7 +31,7 @@ test("bench: alternating rounds, paired ratios, outputs compared, every sample k
     out,
     ref: side("fake-check-ref"),
     cands: [side("fake-check-fast"), side("fake-check-other")],
-    runs: 3,
+    runs: 5,
     minRounds: 3,
     warmup: 1,
     attempts: 1,
@@ -42,10 +42,10 @@ test("bench: alternating rounds, paired ratios, outputs compared, every sample k
   assert.deepEqual(bundle.sides.map((s) => s.checkCommand.slice(-2)), [["-p", "tsconfig.json"], ["-p", "tsconfig.json"], ["-p", "tsconfig.json"]]);
   const records = readFileSync(join(dir, "samples.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
   const rounds = records.filter((r) => r.type === "round");
-  assert.deepEqual(rounds.map((r) => r.order[0]), ["fake-check-ref", "fake-check-other", "fake-check-ref"], "order alternates");
+  assert.deepEqual(rounds.map((r) => r.order[0]), ["fake-check-ref", "fake-check-other", "fake-check-ref", "fake-check-other", "fake-check-ref"], "order alternates");
   assert.equal(records.filter((r) => r.type === "sample" && r.warmup).length, 3);
 
-  assert.equal(summary.rounds.accepted, 3);
+  assert.equal(summary.rounds.accepted, 5);
   const [fast, other] = summary.candidates;
   assert.equal(fast!.state, "measured");
   // 20 ms of work against 200 ms, plus Node's start-up on both sides.

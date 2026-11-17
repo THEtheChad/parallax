@@ -1,12 +1,12 @@
 // Summarizing an lsp-bench: a pure function of samples.jsonl (sessions and rounds), like the CLI
 // bench's summary. Each accepted round gives one number per metric per side; a side's figure is the
-// median over rounds with a bootstrap interval, and a candidate's is the median of its per-round ratio
+// median over rounds with an order-statistic interval, and a candidate's is the median of its per-round ratio
 // to the reference, so load steady over a round cancels.
 
 import { acceptRounds, type Gates, type RoundRecord } from "./summary.ts";
 import type { MetricKey, SessionCounts, SessionMetrics } from "./lspSession.ts";
 import type { Outcome } from "../bundle/bundle.ts";
-import { bootstrapMedian, callOf, type Call, type Interval } from "./stats.ts";
+import { medianInterval, callOf, type Call, type Interval } from "./stats.ts";
 
 export interface SessionRecord {
   type: "session";
@@ -122,7 +122,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     const metrics: Partial<Record<MetricKey, Interval | null>> = {};
     for (const { key } of METRICS) {
       const xs = values(mine, key);
-      metrics[key] = xs ? bootstrapMedian(xs) : null;
+      metrics[key] = xs ? medianInterval(xs) : null;
     }
     return {
       label,
@@ -146,7 +146,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
       for (const { key } of METRICS) {
         const pairs = accepted.map((ss) => [ss.find((s) => s.side === ref.label)!.metrics[key], ss.find((s) => s.side === label)!.metrics[key]] as const);
         const ok = pairs.length > 0 && pairs.every(([r, c]) => r !== null && r > 0 && c !== null);
-        const ratio = ok ? bootstrapMedian(pairs.map(([r, c]) => c! / r!)) : null;
+        const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!)) : null;
         metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio) : null };
       }
       return { label, state, metrics };

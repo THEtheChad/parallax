@@ -44,7 +44,7 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
     edits: 4,
     lines: 1,
     intervalMs: 30,
-    runs: 3,
+    runs: 5,
     minRounds: 3,
     warmup: 1,
     attempts: 1,
@@ -53,12 +53,12 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
   });
   assert.equal(bundle.status, "complete");
   assert.deepEqual(bundle.session.files, ["src/a.ts", "src/b.tsx", "src/c.ts"]);
-  assert.equal(summary.rounds.accepted, 3);
+  assert.equal(summary.rounds.accepted, 5);
 
   const records = readJsonl(join(dir, "samples.jsonl"));
   const sessions = records.filter((r) => r.type === "session");
-  assert.equal(sessions.length, 8, "a warm-up and three rounds per side");
-  assert.deepEqual(records.filter((r) => r.type === "round").map((r) => r.order[0]), ["slow", "quick", "slow"], "order alternates");
+  assert.equal(sessions.length, 12, "a warm-up and five rounds per side");
+  assert.deepEqual(records.filter((r) => r.type === "round").map((r) => r.order[0]), ["slow", "quick", "slow", "quick", "slow"], "order alternates");
 
   // Every request of a session is on disk, typing requests with the time their key was due.
   const log = readJsonl(join(dir, "runs/slow.1.1.jsonl"));

@@ -86,8 +86,9 @@ and keeps only rounds that were not disturbed:
 
 - **Rounds.** Each round runs every side once, back to back, alternating the order (ref, A, B, then
   B, A, ref). Candidates are compared by their time divided by the reference's time *in the same
-  round*, so load that is steady across a round cancels. Results are medians with 95% bootstrap
-  intervals; a candidate is `faster` or `slower` only when the whole interval is on one side of 1.
+  round*, so load that is steady across a round cancels. Results are medians with distribution-free
+  intervals (see [Calls](#calls)); a candidate is `faster` or `slower` only when the whole interval is
+  on one side of 1.
 - **Idle wait.** Before each round, wait until other programs use at most `--max-busy-cores` (1.5).
 - **Outside load.** Machine CPU during the round minus the harness's and the measured commands' own
   CPU. A round where other programs used more than `--max-outside-cores` (1) is rejected and retried.
@@ -156,8 +157,15 @@ forces a choice. If the harness itself sends keys late (a busy client machine), 
 
 ## Calls
 
-A candidate is `faster` or `slower` only when the whole 95% interval of its ratio is on one side of
-1 and the ratio differs from 1 by at least 1%; otherwise it is `indistinguishable`.
+Each ratio is the median of the per-round ratios, with an interval for that median taken from the
+sorted rounds themselves (order statistics), which assumes nothing about how the times are
+distributed. It aims for 95%; with few rounds the best it can do is the whole range, and the report
+prints what that range really covers: 75% for 3 rounds, 93% for 5, 96% from 6.
+
+A candidate is `faster` or `slower` only when the whole interval is on one side of 1 and the ratio
+differs from 1 by at least 1%; otherwise it is `indistinguishable`. An interval that covers less than
+90% supports no call: the call is `too few rounds`. In practice a call needs at least 5 accepted
+rounds, all on the same side of 1 (5 of 5 happens by luck 1 time in 16; 3 of 3, 1 time in 4).
 
 ## Profiles
 

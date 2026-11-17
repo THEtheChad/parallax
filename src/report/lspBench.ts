@@ -4,7 +4,7 @@
 import type { LspBenchSummary } from "../timing/lspSummary.ts";
 import { METRICS } from "../timing/lspSummary.ts";
 import type { Interval } from "../timing/stats.ts";
-import { ms, ratio, table, withInterval } from "./bench.ts";
+import { intervalColumn, ms, ratio, table } from "./bench.ts";
 
 const mb = (v: number): string => `${Math.round(v / 2 ** 20)} MB`;
 
@@ -25,13 +25,14 @@ export function renderLspBenchSummary(s: LspBenchSummary): string {
     const cand = s.sides.find((x) => x.label === c.label)!;
     out.push("");
     out.push(`${c.label} vs ${ref.label}: ${c.state}`);
-    const rows = METRICS.filter(({ key }) => ref.metrics[key] || cand.metrics[key]).map(({ key, label, unit }) => {
+    const shown = METRICS.filter(({ key }) => ref.metrics[key] || cand.metrics[key]);
+    const ratios = intervalColumn("ratio", shown.map(({ key }) => c.metrics[key]?.ratio ?? null), ratio);
+    const rows = shown.map(({ key, label, unit }, i) => {
       const f = unit === "bytes" ? mb : ms;
-      const median = (i: Interval | null | undefined): string => (i ? f(i.estimate) : "-");
-      const m = c.metrics[key];
-      return [label, median(ref.metrics[key]), median(cand.metrics[key]), withInterval(m?.ratio ?? null, ratio), m?.call ?? "-"];
+      const median = (x: Interval | null | undefined): string => (x ? f(x.estimate) : "-");
+      return [label, median(ref.metrics[key]), median(cand.metrics[key]), ratios.cells[i]!, c.metrics[key]?.call ?? "-"];
     });
-    out.push(table(["metric", ref.label, c.label, "ratio (95% interval)", "call"], rows));
+    out.push(table(["metric", ref.label, c.label, ratios.header, "call"], rows));
   }
   out.push("");
   out.push(s.clean ? "MEASURED" : "NOT MEASURED CLEANLY: see the states above");

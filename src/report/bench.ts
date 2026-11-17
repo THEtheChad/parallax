@@ -10,7 +10,21 @@ export function table(header: string[], rows: string[][]): string {
 }
 
 export const ms = (v: number): string => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(v < 10 ? 1 : 0)} ms`);
-export const withInterval = (i: Interval | null, f: (v: number) => string): string => (i ? `${f(i.estimate)} (${f(i.low)}..${f(i.high)})` : "-");
+export const withInterval = (i: Interval | null, f: (v: number) => string, showConfidence = false): string =>
+  i ? `${f(i.estimate)} (${f(i.low)}..${f(i.high)}${showConfidence ? `, ${percent(i.confidence)}` : ""})` : "-";
+// Rounded down: a 93.75% interval is not a 94% one.
+const percent = (c: number): string => `${Math.floor(c * 100)}%`;
+
+// An interval column: its confidence goes in the header when every row shares it (the usual case, as
+// every row has one value per accepted round), else in each cell.
+export function intervalColumn(name: string, intervals: (Interval | null)[], f: (v: number) => string): { header: string; cells: string[] } {
+  const confidences = new Set(intervals.flatMap((i) => (i ? [percent(i.confidence)] : [])));
+  const shared = confidences.size <= 1 ? ([...confidences][0] ?? null) : null;
+  return {
+    header: shared ? `${name} (${shared} interval)` : `${name} (interval, confidence)`,
+    cells: intervals.map((i) => withInterval(i, f, shared === null)),
+  };
+}
 export const ratio = (v: number): string => `${v.toFixed(2)}x`;
 
 export function renderBenchSummary(s: BenchSummary): string {
@@ -20,13 +34,14 @@ export function renderBenchSummary(s: BenchSummary): string {
   for (const [why, n] of Object.entries(s.rejections)) out.push(`  rejected ${n}x: ${why}`);
   out.push(`canary ${s.canaryBaselineMs === null ? "-" : `${s.canaryBaselineMs.toFixed(1)} ms`}; accounting ${s.accounting}`);
   out.push("");
+  const wall = intervalColumn("wall median", s.sides.map((x) => x.wallMs), ms);
   out.push(
     table(
-      ["side", "n", "wall median (95% interval)", "CPU", "peak RSS", "exit", "output"],
-      s.sides.map((x) => [
+      ["side", "n", wall.header, "CPU", "peak RSS", "exit", "output"],
+      s.sides.map((x, i) => [
         x.label,
         String(x.samples),
-        withInterval(x.wallMs, ms),
+        wall.cells[i]!,
         x.cpuMs ? ms(x.cpuMs.estimate) : "-",
         x.maxRssBytes === null ? "-" : `${Math.round(x.maxRssBytes / 2 ** 20)} MB`,
         x.exitCodes.join(","),
@@ -35,10 +50,11 @@ export function renderBenchSummary(s: BenchSummary): string {
     ),
   );
   out.push("");
+  const vsRef = intervalColumn("wall vs ref", s.candidates.map((c) => c.wallRatio), ratio);
   out.push(
     table(
-      ["candidate", "state", "wall vs ref (95% interval)", "CPU vs ref", "call"],
-      s.candidates.map((c) => [c.label, c.state, withInterval(c.wallRatio, ratio), c.cpuRatio ? ratio(c.cpuRatio.estimate) : "-", c.call ?? "-"]),
+      ["candidate", "state", vsRef.header, "CPU vs ref", "call"],
+      s.candidates.map((c, i) => [c.label, c.state, vsRef.cells[i]!, c.cpuRatio ? ratio(c.cpuRatio.estimate) : "-", c.call ?? "-"]),
     ),
   );
   out.push("");
