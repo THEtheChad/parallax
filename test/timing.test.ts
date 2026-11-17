@@ -186,3 +186,43 @@ test("machine state: power and CPU-frequency probes parse what each OS prints", 
   const here = machineState();
   assert.ok(typeof here === "object" && "governors" in here);
 });
+
+test("thread modes: each candidate is compared with the reference in its own mode; speedup per implementation", () => {
+  const records: (SampleRecord | RoundRecord)[] = [];
+  // Default mode: ref 100, cand 50 (0.5x). Single-threaded: ref 400, cand 100 (0.25x): the
+  // candidate gains less from threads (2x) than the reference (4x).
+  const walls: Record<string, number> = { ref: 100, cand: 50, "ref@1t": 400, "cand@1t": 100 };
+  for (let round = 1; round <= 5; round++) {
+    const jitter = 1 + round / 100;
+    for (const [side, wall] of Object.entries(walls)) {
+      records.push({
+        type: "sample", side, role: side.startsWith("ref") ? "ref" : "cand", round, attempt: 1, warmup: false, startedAt: "",
+        wallMs: wall * jitter, drainMs: wall, exit: { code: 0, signal: null }, timedOut: false, crashSignals: [], stdoutSha256: "same",
+        stderrSha256: "", outputLines: 0, cpuMs: wall, userMs: wall, sysMs: 0, adoptedCpuMs: null, adopted: null, maxRssBytes: 1, window: win, outsideCores: 0,
+      });
+    }
+    records.push({ type: "round", round, attempt: 1, order: Object.keys(walls), idle: idle(), canaryBeforeMs: 20, canaryAfterMs: 20, window: win, outsideCores: 0, rejected: [] });
+  }
+  const s = summarizeBench({
+    records,
+    sides: [
+      { label: "ref", role: "ref", mode: "default", base: "ref" },
+      { label: "cand", role: "cand", mode: "default", base: "cand" },
+      { label: "ref@1t", role: "ref", mode: "single", base: "ref" },
+      { label: "cand@1t", role: "cand", mode: "single", base: "cand" },
+    ],
+    plannedRounds: 5,
+    minRounds: 3,
+    gates: DEFAULT_GATES,
+    accounting: "gnu-time",
+  });
+  const byLabel = Object.fromEntries(s.candidates.map((c) => [c.label, c]));
+  assert.equal(byLabel.cand!.ref, "ref");
+  assert.ok(Math.abs(byLabel.cand!.wallRatio!.estimate - 0.5) < 1e-9);
+  assert.equal(byLabel["cand@1t"]!.ref, "ref@1t");
+  assert.ok(Math.abs(byLabel["cand@1t"]!.wallRatio!.estimate - 0.25) < 1e-9);
+  const speedup = Object.fromEntries(s.speedups.map((x) => [x.base, x.ratio!.estimate]));
+  assert.ok(Math.abs(speedup.ref! - 4) < 1e-9 && Math.abs(speedup.cand! - 2) < 1e-9);
+  assert.equal(s.sides.find((x) => x.label === "ref@1t")!.outputMatchesRef, true, "a single-threaded run must give the reference's output too");
+  assert.equal(s.clean, true);
+});

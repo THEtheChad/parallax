@@ -8,6 +8,7 @@
 // bench (the machine's speed changed). Rejected rounds stay in the bundle but never enter a statistic.
 
 import type { CpuWindow, IdleWait } from "../host/machine.ts";
+import type { ThreadMode } from "../profile/profile.ts";
 import { medianInterval, callOf, median, type Call, type Interval } from "./stats.ts";
 
 export interface SampleRecord {
@@ -77,6 +78,7 @@ export type CandidateState = "measured" | "noisy" | "failed";
 export interface SideSummary {
   label: string;
   role: "ref" | "cand";
+  mode: ThreadMode;
   samples: number;
   wallMs: Interval | null;
   cpuMs: Interval | null;
@@ -91,6 +93,9 @@ export interface SideSummary {
 
 export interface CandidateSummary {
   label: string;
+  // The reference it is compared with: the one running in the same thread mode.
+  ref: string;
+  mode: ThreadMode;
   state: CandidateState;
   // Candidate / reference within each accepted round.
   wallRatio: Interval | null;
@@ -108,12 +113,43 @@ export interface BenchSummary {
   accounting: string;
   sides: SideSummary[];
   candidates: CandidateSummary[];
+  // Per implementation run in both modes: single-threaded wall time / default wall time, paired within
+  // each round (2x: the default mode's parallelism halves the time).
+  speedups: { base: string; ratio: Interval | null }[];
   clean: boolean;
+}
+
+export interface SideInfo {
+  label: string;
+  role: "ref" | "cand";
+  // Absent in bundles from before thread modes: "default", and the label is the base.
+  mode?: ThreadMode;
+  base?: string;
+}
+
+export const modeOf = (s: SideInfo): ThreadMode => s.mode ?? "default";
+const baseOf = (s: SideInfo): string => s.base ?? s.label;
+
+// The reference a side is compared with: the reference running in the same thread mode (or the only
+// reference there is).
+export function refFor(sides: SideInfo[], side: Pick<SideInfo, "mode">): SideInfo {
+  const refs = sides.filter((s) => s.role === "ref");
+  return refs.find((r) => modeOf(r) === (side.mode ?? "default")) ?? refs[0]!;
+}
+
+// Each implementation that ran in both modes, as [default label, single label].
+export function modePairs(sides: SideInfo[]): { base: string; multi: string; single: string }[] {
+  const out: { base: string; multi: string; single: string }[] = [];
+  for (const s of sides.filter((x) => modeOf(x) === "default")) {
+    const single = sides.find((x) => modeOf(x) === "single" && baseOf(x) === baseOf(s));
+    if (single) out.push({ base: baseOf(s), multi: s.label, single: single.label });
+  }
+  return out;
 }
 
 export interface SummarizeInput {
   records: (SampleRecord | RoundRecord)[];
-  sides: { label: string; role: "ref" | "cand" }[];
+  sides: SideInfo[];
   plannedRounds: number;
   minRounds: number;
   gates: Gates;
@@ -165,10 +201,13 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
   const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
   const samples = input.records.filter((r): r is SampleRecord => r.type === "sample");
   const { baseline, accepted, ...counts } = acceptRounds(rounds, samples.filter((s) => !s.warmup), input.sides.length, failed, input.gates);
-  const ref = input.sides.find((s) => s.role === "ref")!;
-  const refOutputs = new Set(samples.filter((s) => s.side === ref.label).map((s) => `${s.exit.code}:${s.stdoutSha256}`));
+  // Every side's output is compared with the default-mode reference's: a single-threaded run must
+  // give the same output too.
+  const canonical = refFor(input.sides, { mode: "default" });
+  const refOutputs = new Set(samples.filter((s) => s.side === canonical.label).map((s) => `${s.exit.code}:${s.stdoutSha256}`));
 
-  const sides: SideSummary[] = input.sides.map(({ label, role }) => {
+  const sides: SideSummary[] = input.sides.map((info) => {
+    const { label, role } = info;
     const all = samples.filter((s) => s.side === label);
     const mine = accepted.map((ss) => ss.find((s) => s.side === label)!);
     const cpu = mine.map((s) => s.cpuMs).filter((x): x is number => x !== null);
@@ -177,6 +216,7 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
     return {
       label,
       role,
+      mode: modeOf(info),
       samples: mine.length,
       wallMs: medianInterval(mine.map((s) => s.wallMs)),
       cpuMs: cpu.length === mine.length ? medianInterval(cpu) : null,
@@ -185,21 +225,28 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       exitCodes: [...new Set(all.map((s) => s.exit.code))],
       outputs: outputs.size,
       outputStable: outputs.size <= 1,
-      outputMatchesRef: role === "ref" ? null : outputs.size === 1 && refOutputs.size === 1 ? [...outputs][0] === [...refOutputs][0] : false,
+      outputMatchesRef: label === canonical.label ? null : outputs.size === 1 && refOutputs.size === 1 ? [...outputs][0] === [...refOutputs][0] : false,
     };
   });
 
   const candidates: CandidateSummary[] = input.sides
     .filter((s) => s.role === "cand")
-    .map(({ label }) => {
+    .map((info) => {
+      const { label } = info;
+      const ref = refFor(input.sides, info);
       const pairs = accepted.map((ss) => ({ ref: ss.find((s) => s.side === ref.label)!, cand: ss.find((s) => s.side === label)! }));
       const wallRatio = medianInterval(pairs.map((p) => p.cand.wallMs / p.ref.wallMs));
       const cpuPairs = pairs.filter((p) => p.ref.cpuMs && p.cand.cpuMs !== null);
       const cpuRatio = cpuPairs.length === pairs.length ? medianInterval(cpuPairs.map((p) => p.cand.cpuMs! / p.ref.cpuMs!)) : null;
       const anyFailed = samples.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : pairs.length < input.minRounds ? "noisy" : "measured";
-      return { label, state, wallRatio, cpuRatio, call: state === "measured" && wallRatio ? callOf(wallRatio) : null };
+      return { label, ref: ref.label, mode: modeOf(info), state, wallRatio, cpuRatio, call: state === "measured" && wallRatio ? callOf(wallRatio) : null };
     });
+
+  const speedups = modePairs(input.sides).map(({ base, multi, single }) => ({
+    base,
+    ratio: medianInterval(accepted.map((ss) => ss.find((s) => s.side === single)!.wallMs / ss.find((s) => s.side === multi)!.wallMs)),
+  }));
 
   return {
     schema: "parallax.bench-summary/1",
@@ -211,6 +258,7 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
     accounting: input.accounting,
     sides,
     candidates,
+    speedups,
     clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable),
   };
 }

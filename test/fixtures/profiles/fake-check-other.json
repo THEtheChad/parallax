@@ -4,5 +4,6 @@
   "lsp": { "command": ["node", "{bin}"] },
   "check": { "command": ["node", "{bin}", "-p", "{config}"] },
   "env": { "clear": ["FAKE_*"], "set": { "FAKE_CHECK_MS": "20", "FAKE_CHECK_OUTPUT": "something else", "FAKE_CHECK_EXIT": "2" } },
-  "crash": { "stderr": ["^panic: "] }
+  "crash": { "stderr": ["^panic: "] },
+  "singleThreaded": { "check": { "env": { "FAKE_SINGLE_THREADED": "1" } }, "lsp": { "env": { "FAKE_SINGLE_THREADED": "1" } } }
 }

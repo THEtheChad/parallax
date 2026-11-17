@@ -20,8 +20,9 @@ export function renderLspBenchSummary(s: LspBenchSummary): string {
     const outcomes = Object.entries(side.outcomes).map(([k, n]) => `${n} ${k}`).join(", ");
     out.push(`${side.label}: ${side.sessions} sessions measured, ${side.requests} requests (${side.cancelled} cancelled, ${side.errors} errors); every session, warm-ups included: ${outcomes}`);
   }
-  const ref = s.sides.find((x) => x.role === "ref")!;
   for (const c of s.candidates) {
+    // `ref` is absent in summaries from before thread modes: there was one reference.
+    const ref = s.sides.find((x) => x.label === c.ref) ?? s.sides.find((x) => x.role === "ref")!;
     const cand = s.sides.find((x) => x.label === c.label)!;
     out.push("");
     out.push(`${c.label} vs ${ref.label}: ${c.state}`);

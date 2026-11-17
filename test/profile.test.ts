@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { crashSignals, loadProfile, resolveEnv, validateProfile } from "../src/profile/profile.ts";
+import { bindSide, crashSignals, loadProfile, parseThreadModes, resolveEnv, sidesInModes, validateProfile } from "../src/profile/profile.ts";
 
 test("built-in profiles load and validate", () => {
   for (const name of ["tsc7", "tsrs", "tsc-rs-fork"]) assert.equal(loadProfile(name).profile.name, name);
@@ -39,4 +39,23 @@ test("crash signatures from exit code and stderr", () => {
   const { profile } = loadProfile("tsc-rs-fork");
   assert.deepEqual(crashSignals(profile, 0, "fine\n"), []);
   assert.equal(crashSignals(profile, 70, "thread 'main' panicked at src/x.rs:1:1:\n").length, 3);
+});
+
+test("thread modes: the single-threaded variant adds the profile's arguments and environment", async () => {
+  const bin = process.execPath;
+  const lsp = sidesInModes([await bindSide(`tsc7=${bin}`, "ref"), await bindSide(`tsrs=${bin}`, "cand")], ["default", "single"], "lsp");
+  assert.deepEqual(lsp.map((s) => s.label), ["tsc7", "tsrs", "tsc7@1t", "tsrs@1t"]);
+  const [tsc7, , tsc7single, tsrsSingle] = lsp;
+  assert.equal(tsc7!.env.env.GOMAXPROCS, undefined, "the default mode clears it");
+  assert.equal(tsc7single!.env.env.GOMAXPROCS, "1");
+  assert.equal(tsrsSingle!.env.env.RAYON_NUM_THREADS, "1");
+  assert.deepEqual([tsc7single!.mode, tsc7single!.base], ["single", "tsc7"]);
+  const check = sidesInModes([await bindSide(`tsc7=${bin}`, "ref")], ["single"], "check");
+  assert.deepEqual(check[0]!.checkArgs, ["--singleThreaded"]);
+  assert.deepEqual(parseThreadModes("both"), ["default", "single"]);
+  assert.deepEqual(parseThreadModes("single"), ["single"]);
+  assert.throws(() => parseThreadModes("two"), /want default, single or both/);
+  const bare = validateProfile({ schema: "parallax.profile/1", name: "bare", lsp: { command: ["{bin}"] } }, "x");
+  const side = { ...(await bindSide(`tsc7=${bin}`, "ref")), profile: bare };
+  assert.throws(() => sidesInModes([side], ["single"], "lsp"), /does not say how to run its language server single-threaded/);
 });

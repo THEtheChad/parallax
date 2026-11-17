@@ -10,5 +10,6 @@
   "libraryFiles": { "uriPrefix": "bundled:///libs/" },
   "crash": { "exitCodes": [70], "stderr": ["panicked at ", "^thread '.*' panicked"] },
   "shutdown": { "exitCodes": [1] },
-  "knownGaps": []
+  "knownGaps": [],
+  "singleThreaded": { "check": { "args": ["--singleThreaded"] }, "lsp": { "env": { "GOMAXPROCS": "1" } } }
 }

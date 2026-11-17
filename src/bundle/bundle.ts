@@ -11,7 +11,7 @@ import { cpus, hostname, loadavg, platform, release, arch, totalmem, uptime } fr
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { machineState, type MachineState } from "../host/machineState.ts";
-import type { Role, Side } from "../profile/profile.ts";
+import type { Role, Side, ThreadMode } from "../profile/profile.ts";
 
 export const BUNDLE_SCHEMA = "parallax.bundle/1";
 
@@ -30,6 +30,9 @@ export interface SideRecord {
   lib: { uriPrefix?: string; dir?: string } | null;
   processModel: string;
   knownGaps: string[];
+  // Thread mode ("default" when absent: bundles from before modes existed) and the label without it.
+  mode?: ThreadMode;
+  base?: string;
 }
 
 export type Outcome = "clean" | "crash" | "timeout" | "error" | "imported";
@@ -165,6 +168,8 @@ export function sideRecord(s: Side): SideRecord {
     lib: s.lib ?? null,
     processModel: s.profile.processModel ?? "single",
     knownGaps: s.profile.knownGaps ?? [],
+    mode: s.mode,
+    base: s.base,
   };
 }
 

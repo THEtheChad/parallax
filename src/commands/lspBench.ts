@@ -24,7 +24,7 @@ import { JsonlWriter } from "../bundle/lines.ts";
 import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
 import { machineStateNotes } from "../host/machineState.ts";
 import { memoryKind, usageBackend } from "../host/serverUsage.ts";
-import { bindSide, type Side } from "../profile/profile.ts";
+import { bindSide, sidesInModes, THREAD_MODES, type Side, type ThreadMode } from "../profile/profile.ts";
 import { pickFiles, rel } from "../session/picker.ts";
 import { TYPED } from "../session/script.ts";
 import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
@@ -35,6 +35,8 @@ import { DEFAULT_GATES, type Gates, type RoundRecord } from "../timing/summary.t
 import { prepareBundleDir } from "./lspDiff.ts";
 
 export interface LspBenchSettings {
+  // Thread modes each server runs in (absent in bundles from before modes: default only).
+  threads: ThreadMode[];
   files: number;
   edits: number;
   intervalMs: number;
@@ -87,6 +89,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   const root = resolve(opts.project);
   if (!existsSync(root)) throw new Error(`no project at ${root}`);
   const settings: LspBenchSettings = {
+    threads: opts.threads ?? [...THREAD_MODES],
     files: opts.files ?? 6,
     edits: opts.edits ?? 20,
     intervalMs: opts.intervalMs ?? 120,
@@ -101,8 +104,9 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   };
   if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
   if (!(settings.intervalMs > 0)) throw new Error("--interval-ms must be more than 0");
-  const sides: Side[] = [await bindSide(opts.ref, "ref")];
-  for (const c of opts.cands) sides.push(await bindSide(c, "cand"));
+  const bound: Side[] = [await bindSide(opts.ref, "ref")];
+  for (const c of opts.cands) bound.push(await bindSide(c, "cand"));
+  const sides = sidesInModes(bound, settings.threads, "lsp");
   const labels = sides.map((s) => s.label);
   if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
 
@@ -215,7 +219,7 @@ export function summarizeLspBenchBundle(dir: string, bundle: LspBenchBundle, gat
     .map((l) => JSON.parse(l) as SessionRecord | RoundRecord);
   const summary = summarizeLspBench({
     records,
-    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role })),
+    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role, mode: s.mode, base: s.base })),
     plannedRounds: bundle.settings.runs,
     minRounds: bundle.settings.minRounds,
     gates,

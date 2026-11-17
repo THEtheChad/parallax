@@ -3,5 +3,6 @@
   "name": "fake-lsp-slow",
   "lsp": { "command": ["node", "{bin}"] },
   "env": { "clear": ["FAKE_*"], "set": { "FAKE_WORK_MS": "8", "FAKE_EDIT_WORK_MS": "30" } },
-  "crash": { "exitCodes": [70], "stderr": ["panicked at "] }
+  "crash": { "exitCodes": [70], "stderr": ["panicked at "] },
+  "singleThreaded": { "check": { "env": { "FAKE_SINGLE_THREADED": "1" } }, "lsp": { "env": { "FAKE_SINGLE_THREADED": "1" } } }
 }

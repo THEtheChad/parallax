@@ -19,7 +19,8 @@ const percent = (c: number): string => `${Math.floor(c * 100)}%`;
 // every row has one value per accepted round), else in each cell.
 export function intervalColumn(name: string, intervals: (Interval | null)[], f: (v: number) => string): { header: string; cells: string[] } {
   const confidences = new Set(intervals.flatMap((i) => (i ? [percent(i.confidence)] : [])));
-  const shared = confidences.size <= 1 ? ([...confidences][0] ?? null) : null;
+  if (!confidences.size) return { header: name, cells: intervals.map(() => "-") };
+  const shared = confidences.size === 1 ? [...confidences][0]! : null;
   return {
     header: shared ? `${name} (${shared} interval)` : `${name} (interval, confidence)`,
     cells: intervals.map((i) => withInterval(i, f, shared === null)),
@@ -53,10 +54,16 @@ export function renderBenchSummary(s: BenchSummary): string {
   const vsRef = intervalColumn("wall vs ref", s.candidates.map((c) => c.wallRatio), ratio);
   out.push(
     table(
-      ["candidate", "state", vsRef.header, "CPU vs ref", "call"],
-      s.candidates.map((c, i) => [c.label, c.state, vsRef.cells[i]!, c.cpuRatio ? ratio(c.cpuRatio.estimate) : "-", c.call ?? "-"]),
+      ["candidate", "vs", "state", vsRef.header, "CPU vs ref", "call"],
+      // `ref` is absent in summaries from before thread modes: there was one reference.
+      s.candidates.map((c, i) => [c.label, c.ref ?? "ref", c.state, vsRef.cells[i]!, c.cpuRatio ? ratio(c.cpuRatio.estimate) : "-", c.call ?? "-"]),
     ),
   );
+  if (s.speedups?.length) {
+    const sp = intervalColumn("single-threaded / default wall", s.speedups.map((x) => x.ratio), ratio);
+    out.push("");
+    out.push(table(["parallel speedup", sp.header], s.speedups.map((x, i) => [x.base, sp.cells[i]!])));
+  }
   out.push("");
   out.push(s.clean ? "MEASURED" : "NOT MEASURED CLEANLY: see the states above");
   return out.join("\n");

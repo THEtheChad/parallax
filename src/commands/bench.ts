@@ -28,7 +28,7 @@ import { detectAccounting } from "../host/accounting.ts";
 import { machineStateNotes } from "../host/machineState.ts";
 import { groupTrackingAvailable } from "../host/procGroup.ts";
 import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
-import { bindSide, crashSignals, expand, type Side } from "../profile/profile.ts";
+import { bindSide, crashSignals, expand, sidesInModes, THREAD_MODES, type Side, type ThreadMode } from "../profile/profile.ts";
 import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
 import { runRounds } from "../timing/rounds.ts";
 import { runCommand } from "../timing/runCommand.ts";
@@ -37,6 +37,8 @@ import { prepareBundleDir } from "./lspDiff.ts";
 
 export interface BenchSettings {
   config: string;
+  // Thread modes each side runs in (absent in bundles from before modes: default only).
+  threads: ThreadMode[];
   runs: number;
   minRounds: number;
   warmup: number;
@@ -81,7 +83,7 @@ const offIfUnlimited = (g: Gates): Gates => ({
 
 export function checkCommand(side: Side, config: string, project: string): string[] {
   if (!side.profile.check) throw new Error(`profile ${side.profile.name} has no check command`);
-  return side.profile.check.command.map((t) => expand(t, { ...side.vars, config, project }));
+  return [...side.profile.check.command.map((t) => expand(t, { ...side.vars, config, project })), ...side.checkArgs];
 }
 
 export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: BenchBundle; summary: BenchSummary }> {
@@ -89,6 +91,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   if (!existsSync(root)) throw new Error(`no project at ${root}`);
   const settings: BenchSettings = {
     config: opts.config ?? "tsconfig.json",
+    threads: opts.threads ?? [...THREAD_MODES],
     runs: opts.runs ?? 5,
     minRounds: opts.minRounds ?? 3,
     warmup: opts.warmup ?? 1,
@@ -99,8 +102,9 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   };
   if (!existsSync(resolve(root, settings.config))) throw new Error(`no ${settings.config} in ${root}`);
   if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
-  const sides: Side[] = [await bindSide(opts.ref, "ref")];
-  for (const c of opts.cands) sides.push(await bindSide(c, "cand"));
+  const bound: Side[] = [await bindSide(opts.ref, "ref")];
+  for (const c of opts.cands) bound.push(await bindSide(c, "cand"));
+  const sides = sidesInModes(bound, settings.threads, "check");
   const labels = sides.map((s) => s.label);
   if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
   const commands = new Map(sides.map((s) => [s.label, checkCommand(s, settings.config, root)]));
@@ -208,7 +212,7 @@ export function summarizeBenchBundle(dir: string, bundle: BenchBundle, gates: Ga
     .map((l) => JSON.parse(l) as SampleRecord | RoundRecord);
   const summary = summarizeBench({
     records,
-    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role })),
+    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role, mode: s.mode, base: s.base })),
     plannedRounds: bundle.settings.runs,
     minRounds: bundle.settings.minRounds,
     gates,

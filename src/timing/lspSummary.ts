@@ -3,7 +3,8 @@
 // median over rounds with an order-statistic interval, and a candidate's is the median of its per-round ratio
 // to the reference, so load steady over a round cancels.
 
-import { acceptRounds, type Gates, type RoundRecord } from "./summary.ts";
+import { acceptRounds, modeOf, refFor, type Gates, type RoundRecord, type SideInfo } from "./summary.ts";
+import type { ThreadMode } from "../profile/profile.ts";
 import type { MetricKey, SessionCounts, SessionMetrics } from "./lspSession.ts";
 import type { Outcome } from "../bundle/bundle.ts";
 import { medianInterval, callOf, type Call, type Interval } from "./stats.ts";
@@ -59,6 +60,7 @@ export type CandidateState = "measured" | "noisy" | "failed";
 export interface LspSideSummary {
   label: string;
   role: "ref" | "cand";
+  mode: ThreadMode;
   sessions: number;
   failures: number;
   outcomes: Partial<Record<Outcome, number>>;
@@ -71,6 +73,9 @@ export interface LspSideSummary {
 
 export interface LspCandidateSummary {
   label: string;
+  // The reference it is compared with: the one running in the same thread mode.
+  ref: string;
+  mode: ThreadMode;
   state: CandidateState;
   metrics: Partial<Record<MetricKey, { ratio: Interval | null; call: Call | null }>>;
 }
@@ -94,7 +99,7 @@ export interface LspBenchSummary {
 
 export interface LspSummarizeInput {
   records: (SessionRecord | RoundRecord)[];
-  sides: { label: string; role: "ref" | "cand" }[];
+  sides: SideInfo[];
   plannedRounds: number;
   minRounds: number;
   gates: Gates;
@@ -108,13 +113,13 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
   const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
   const sessions = input.records.filter((r): r is SessionRecord => r.type === "session");
   const { baseline, accepted, ...counts } = acceptRounds(rounds, sessions.filter((s) => !s.warmup), input.sides.length, failed, input.gates);
-  const ref = input.sides.find((s) => s.role === "ref")!;
   const values = (ss: SessionRecord[], key: MetricKey): number[] | null => {
     const xs = ss.map((s) => s.metrics[key]);
     return xs.length && xs.every((x): x is number => x !== null) ? xs : null;
   };
 
-  const sides: LspSideSummary[] = input.sides.map(({ label, role }) => {
+  const sides: LspSideSummary[] = input.sides.map((info) => {
+    const { label, role } = info;
     const all = sessions.filter((s) => s.side === label);
     const mine = accepted.map((ss) => ss.find((s) => s.side === label)!);
     const outcomes: Partial<Record<Outcome, number>> = {};
@@ -127,6 +132,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     return {
       label,
       role,
+      mode: modeOf(info),
       sessions: mine.length,
       failures: all.filter(failed).length,
       outcomes,
@@ -139,7 +145,9 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
 
   const candidates: LspCandidateSummary[] = input.sides
     .filter((s) => s.role === "cand")
-    .map(({ label }) => {
+    .map((info) => {
+      const { label } = info;
+      const ref = refFor(input.sides, info);
       const anyFailed = sessions.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : accepted.length < input.minRounds ? "noisy" : "measured";
       const metrics: LspCandidateSummary["metrics"] = {};
@@ -149,7 +157,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
         const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!)) : null;
         metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio) : null };
       }
-      return { label, state, metrics };
+      return { label, ref: ref.label, mode: modeOf(info), state, metrics };
     });
 
   const lags = sessions.filter((s) => !s.warmup).map((s) => s.counts.lagP95Ms).filter((x): x is number => x !== null);

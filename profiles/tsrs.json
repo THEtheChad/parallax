@@ -1,14 +1,15 @@
 {
   "schema": "parallax.profile/1",
   "name": "tsrs",
-  "description": "tsrs (oxc-project/tsrs): a Rust port of tsc 7. TSRS_FAST=1 switches it into a mode that changes output, so every TSRS_* variable is cleared.",
+  "description": "tsrs (oxc-project/tsrs): a Rust port of tsc 7. TSRS_FAST=1 switches it into a mode that changes output, so every TSRS_* variable is cleared. Its thread pool is Rayon's: RAYON_NUM_THREADS is cleared too, and set to 1 for a single-threaded server.",
   "lsp": { "command": ["{bin}", "--lsp", "--stdio"] },
   "check": { "command": ["{bin}", "-p", "{config}", "--noEmit", "--pretty", "false", "--incremental", "false", "--composite", "false"] },
   "version": { "command": ["{bin}", "--version"] },
-  "env": { "clear": ["TSRS_*", "TSGO_*", "GOMAXPROCS"] },
+  "env": { "clear": ["TSRS_*", "TSGO_*", "GOMAXPROCS", "RAYON_NUM_THREADS"] },
   "processModel": "single",
   "libraryFiles": { "dir": "{binDir}" },
   "crash": { "exitCodes": [5], "stderr": ["panicked at ", "^thread '.*' panicked"] },
   "shutdown": { "exitCodes": [1] },
-  "knownGaps": ["automatic type acquisition"]
+  "knownGaps": ["automatic type acquisition"],
+  "singleThreaded": { "check": { "args": ["--singleThreaded"] }, "lsp": { "env": { "RAYON_NUM_THREADS": "1" } } }
 }

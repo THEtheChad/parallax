@@ -9,6 +9,7 @@ import { bench, readBenchBundle, summarizeBenchBundle } from "./commands/bench.t
 import { importLspdiff } from "./commands/importLspdiff.ts";
 import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "./commands/lspBench.ts";
 import { lspDiff } from "./commands/lspDiff.ts";
+import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
 import { renderBenchSummary } from "./report/bench.ts";
 import { renderLspBenchSummary } from "./report/lspBench.ts";
@@ -23,14 +24,14 @@ const USAGE = `usage:
                                          reference answers in compatible evidence bundles count as reference variants
   parallax summary <bundle-dir>          print summary.json
   parallax bench --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
-                 [--config tsconfig.json] [--runs 5] [--min-runs 3] [--warmup 1] [--attempts 3] [--timeout-ms 600000]
+                 [--config tsconfig.json] [--threads both|default|single] [--runs 5] [--min-runs 3] [--warmup 1] [--attempts 3] [--timeout-ms 600000]
                  [--max-busy-cores 1.5] [--idle-timeout-s 300] [--boot-settle-s 300]
                  [--max-outside-cores 1] [--max-canary-drift 0.1]
                                          time each side's check command in alternating rounds; candidates are
                                          compared by their per-round ratio to the reference
   parallax lsp-bench --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
                      [--files 6] [--file <rel>]... [--edits 20] [--interval-ms 120] [--lines 4] [--request-timeout-ms 120000]
-                     [--runs 5] [--min-runs 3] [--warmup 1] [--attempts 3] [idle and gate options as for bench]
+                     [--threads both|default|single] [--runs 5] [--min-runs 3] [--warmup 1] [--attempts 3] [idle and gate options as for bench]
                                          time each side's language server through one editor session per round:
                                          open (time to first diagnostics), edit (first request after an edit, CPU
                                          per edit), typing (latency from when each key was due, CPU per key)
@@ -125,6 +126,7 @@ const defined = <T extends object>(o: T): Partial<T> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 
 const ROUND_OPTIONS = {
+  threads: { type: "string" },
   runs: { type: "string" },
   "min-runs": { type: "string" },
   warmup: { type: "string" },
@@ -140,8 +142,16 @@ type Values = Record<string, string | boolean | string[] | undefined>;
 
 function roundOptions(o: Values) {
   const idleTimeout = num(o, "idle-timeout-s");
+  let threads: ThreadMode[] | undefined;
+  if (typeof o.threads === "string") {
+    try {
+      threads = parseThreadModes(o.threads);
+    } catch (e) {
+      throw new UsageError((e as Error).message);
+    }
+  }
   return {
-    ...defined({ runs: num(o, "runs"), minRounds: num(o, "min-runs"), warmup: num(o, "warmup"), attempts: num(o, "attempts") }),
+    ...defined({ threads, runs: num(o, "runs"), minRounds: num(o, "min-runs"), warmup: num(o, "warmup"), attempts: num(o, "attempts") }),
     idle: defined({
       maxBusyCores: num(o, "max-busy-cores"),
       timeoutMs: idleTimeout === undefined ? undefined : idleTimeout * 1000,
