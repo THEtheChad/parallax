@@ -57,20 +57,73 @@ export function medianInterval(values: readonly number[], target = 0.95): Interv
 }
 
 // How a candidate compares with the reference, from the interval of paired ratios (candidate time /
-// reference time): a claim needs the whole interval on one side of 1.
-export type Call = "faster" | "slower" | "indistinguishable" | "too few rounds";
+// reference time):
+//
+//   faster, slower   the whole interval is on one side of 1, and the estimate differs from 1 by at
+//                    least `minEffect` (1%): a difference too small to print is no difference
+//   same             the whole interval lies within 1 ± `same` (the resolution): any difference is
+//                    smaller than the bench cares about
+//   unresolved       none of these: more rounds would tell
+//   too few rounds   the interval does not reach the confidence a call needs
+export type Call = "faster" | "slower" | "same" | "unresolved" | "too few rounds";
 
-// Faster or slower only when the whole interval is on one side of 1 and the estimate differs from 1 by
-// at least `minEffect` (1%): a difference too small to print is no difference. An interval that
-// covers less than MIN_CALL_CONFIDENCE (90%) supports no call at all: with the order-statistic
-// interval that takes at least 5 rounds, all on the same side of 1 (5 of 5 has a 6% chance by luck).
+// Calls that more rounds would not change: a bench may stop once every call is one of these.
+export const SETTLED: readonly Call[] = ["faster", "slower", "same"];
+
 export const MIN_EFFECT = 0.01;
-export const MIN_CALL_CONFIDENCE = 0.9;
-export const callOf = (ratio: Interval, minEffect = MIN_EFFECT): Call =>
-  ratio.confidence < MIN_CALL_CONFIDENCE
-    ? "too few rounds"
-    : ratio.high < 1 && ratio.estimate <= 1 - minEffect
-      ? "faster"
-      : ratio.low > 1 && ratio.estimate >= 1 + minEffect
-        ? "slower"
-        : "indistinguishable";
+
+export interface CallRule {
+  // The confidence the interval must have (lookConfidence).
+  confidence: number;
+  // Half-width of "same", as a ratio (0.05: within 5%).
+  same: number;
+  minEffect?: number;
+}
+
+export const DEFAULT_RESOLUTION = 0.05;
+export const DEFAULT_RESOLUTION_MS = 1;
+
+export function callOf(ratio: Interval, rule: CallRule): Call {
+  const minEffect = rule.minEffect ?? MIN_EFFECT;
+  if (ratio.confidence < rule.confidence - 1e-12) return "too few rounds";
+  if (ratio.high < 1 && ratio.estimate <= 1 - minEffect) return "faster";
+  if (ratio.low > 1 && ratio.estimate >= 1 + minEffect) return "slower";
+  if (ratio.low >= 1 - rule.same && ratio.high <= 1 + rule.same) return "same";
+  return "unresolved";
+}
+
+// The half-width of "same" for one metric: the relative resolution, widened to an absolute floor where
+// the reference's figure is so small that the floor is the larger (a 0.3 ms request is "same" within
+// 1 ms, not within 5% of 0.3 ms).
+export const sameWithin = (relative: number, floor: number, refEstimate: number | null): number =>
+  refEstimate !== null && refEstimate > 0 && floor > 0 ? Math.max(relative, floor / refEstimate) : relative;
+
+// Sequential rounds. A bench runs `runs` rounds, then looks; while some call is not settled it runs
+// LOOK_STEP more rounds and looks again, up to `maxRuns`. Looking repeatedly and stopping at the first
+// clear answer would make false calls more likely than one fixed look, so the false-call budget,
+// FALSE_CALL_RATE per comparison, is split in advance (Bonferroni): half for the first look, the other
+// half shared equally by the later ones. With a single look (maxRuns = runs) the whole budget is
+// the first look's.
+export const FALSE_CALL_RATE = 0.1;
+export const LOOK_STEP = 3;
+
+export interface LookPlan {
+  runs: number;
+  maxRuns: number;
+}
+
+// The accepted-round counts at which a bench looks.
+export function lookPoints(p: LookPlan): number[] {
+  const points = [p.runs];
+  for (let n = p.runs + LOOK_STEP; n < p.maxRuns; n += LOOK_STEP) points.push(n);
+  if (p.maxRuns > p.runs) points.push(p.maxRuns);
+  return points;
+}
+
+// The confidence a call needs after n accepted rounds. Between looks (rounds were rejected), the later
+// look's, which is the stricter.
+export function lookConfidence(n: number, p: LookPlan): number {
+  const looks = lookPoints(p).length;
+  if (looks === 1) return 1 - FALSE_CALL_RATE;
+  return n <= p.runs ? 1 - FALSE_CALL_RATE / 2 : 1 - FALSE_CALL_RATE / 2 / (looks - 1);
+}

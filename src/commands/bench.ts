@@ -23,14 +23,15 @@ import {
   type HostInfo,
   type SideRecord,
 } from "../bundle/bundle.ts";
-import { JsonlWriter } from "../bundle/lines.ts";
+import { KeepingJsonlWriter } from "../bundle/lines.ts";
 import { detectAccounting } from "../host/accounting.ts";
 import { machineStateNotes } from "../host/machineState.ts";
 import { groupTrackingAvailable } from "../host/procGroup.ts";
 import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
 import { bindSide, crashSignals, expand, sidesInModes, THREAD_MODES, type Side, type ThreadMode } from "../profile/profile.ts";
 import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
-import { runRounds } from "../timing/rounds.ts";
+import { runRounds, settledAtLook } from "../timing/rounds.ts";
+import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
 import { runCommand } from "../timing/runCommand.ts";
 import { DEFAULT_GATES, summarizeBench, type BenchSummary, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
@@ -39,8 +40,14 @@ export interface BenchSettings {
   config: string;
   // Thread modes each side runs in (absent in bundles from before modes: default only).
   threads: ThreadMode[];
+  // Rounds before the first look, and the most rounds a bench runs while some call is unsettled
+  // (stats.ts lookPoints; absent in bundles from before sequential rounds: runs).
   runs: number;
+  maxRuns: number;
   minRounds: number;
+  // "same" means within this fraction of the reference, or within resolutionMs where that is larger.
+  resolution: number;
+  resolutionMs: number;
   warmup: number;
   attempts: number;
   timeoutMs: number;
@@ -92,8 +99,11 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   const settings: BenchSettings = {
     config: opts.config ?? "tsconfig.json",
     threads: opts.threads ?? [...THREAD_MODES],
-    runs: opts.runs ?? 5,
+    runs: opts.runs ?? 6,
+    maxRuns: opts.maxRuns ?? Math.max(15, opts.runs ?? 6),
     minRounds: opts.minRounds ?? 3,
+    resolution: opts.resolution ?? DEFAULT_RESOLUTION,
+    resolutionMs: opts.resolutionMs ?? DEFAULT_RESOLUTION_MS,
     warmup: opts.warmup ?? 1,
     attempts: opts.attempts ?? 3,
     timeoutMs: opts.timeoutMs ?? 600_000,
@@ -102,6 +112,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   };
   if (!existsSync(resolve(root, settings.config))) throw new Error(`no ${settings.config} in ${root}`);
   if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
+  if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
   const bound: Side[] = [await bindSide(opts.ref, "ref")];
   for (const c of opts.cands) bound.push(await bindSide(c, "cand"));
   const sides = sidesInModes(bound, settings.threads, "check");
@@ -142,7 +153,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   save();
   opts.log(`bundle ${dir}\nproject ${root} (${settings.config}); accounting ${accounting}`);
 
-  const writer = new JsonlWriter(join(dir, "samples.jsonl"));
+  const writer = new KeepingJsonlWriter(join(dir, "samples.jsonl"));
   const sample = async (side: Side, round: number, attempt: number, warmup: boolean): Promise<SampleRecord> => {
     const r = await runCommand({ command: commands.get(side.label)!, cwd: root, env: side.env.env, timeoutMs: settings.timeoutMs, outputsDir });
     const { stderrTail, usage, group, cpuMs, maxRssBytes, ...rest } = r;
@@ -174,6 +185,8 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   await runRounds({
     sides,
     runs: settings.runs,
+    maxRuns: settings.maxRuns,
+    stop: () => settledAtLook(summarize(bundle, writer.records as Records), settings, opts.log),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -204,20 +217,29 @@ export function readBenchBundle(dir: string): BenchBundle {
   return b;
 }
 
+type Records = (SampleRecord | RoundRecord)[];
+
+function summarize(bundle: BenchBundle, records: Records, gates: Gates = bundle.settings.gates): BenchSummary {
+  const st = bundle.settings;
+  return summarizeBench({
+    records,
+    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role, mode: s.mode, base: s.base })),
+    plannedRounds: st.runs,
+    maxRounds: st.maxRuns,
+    minRounds: st.minRounds,
+    ...(st.resolution !== undefined ? { resolution: { relative: st.resolution, floorMs: st.resolutionMs } } : {}),
+    gates,
+    accounting: bundle.host.accounting,
+  });
+}
+
 // Recomputes summary.json from samples.jsonl.
 export function summarizeBenchBundle(dir: string, bundle: BenchBundle, gates: Gates = bundle.settings.gates): BenchSummary {
   const records = readFileSync(join(dir, "samples.jsonl"), "utf8")
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l) as SampleRecord | RoundRecord);
-  const summary = summarizeBench({
-    records,
-    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role, mode: s.mode, base: s.base })),
-    plannedRounds: bundle.settings.runs,
-    minRounds: bundle.settings.minRounds,
-    gates,
-    accounting: bundle.host.accounting,
-  });
+  const summary = summarize(bundle, records, gates);
   writeJsonAtomic(join(dir, "summary.json"), summary);
   return summary;
 }

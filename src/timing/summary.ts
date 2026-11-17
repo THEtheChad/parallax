@@ -9,7 +9,7 @@
 
 import type { CpuWindow, IdleWait } from "../host/machine.ts";
 import type { ThreadMode } from "../profile/profile.ts";
-import { medianInterval, callOf, median, type Call, type Interval } from "./stats.ts";
+import { callOf, DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS, lookConfidence, median, medianInterval, sameWithin, SETTLED, type Call, type Interval, type LookPlan } from "./stats.ts";
 
 export interface SampleRecord {
   type: "sample";
@@ -101,13 +101,18 @@ export interface CandidateSummary {
   wallRatio: Interval | null;
   cpuRatio: Interval | null;
   call: Call | null;
+  // Half-width of "same" for this comparison (the resolution, or the floor over the reference's time).
+  sameWithin: number;
 }
 
 export interface BenchSummary {
   schema: "parallax.bench-summary/1";
   canaryBaselineMs: number | null;
-  rounds: { planned: number; attempts: number; accepted: number; rejected: number; failed: number };
+  rounds: { planned: number; max: number; attempts: number; accepted: number; rejected: number; failed: number };
   minRounds: number;
+  // The confidence calls needed at this many accepted rounds (stats.ts lookConfidence).
+  confidence: number;
+  resolution: Resolution;
   gates: Gates;
   rejections: Record<string, number>;
   accounting: string;
@@ -116,8 +121,21 @@ export interface BenchSummary {
   // Per implementation run in both modes: single-threaded wall time / default wall time, paired within
   // each round (2x: the default mode's parallelism halves the time).
   speedups: { base: string; ratio: Interval | null }[];
+  // Every comparison has a call more rounds would not change (or failed): a sequential bench stops.
+  settled: boolean;
   clean: boolean;
 }
+
+// What counts as "same": within `relative` of the reference, or within `floorMs` where that is larger.
+export interface Resolution {
+  relative: number;
+  floorMs: number;
+}
+
+export const DEFAULT_RESOLUTION_SETTING: Resolution = { relative: DEFAULT_RESOLUTION, floorMs: DEFAULT_RESOLUTION_MS };
+
+// The look plan of a bench: bundles from before sequential rounds ran a fixed number of rounds.
+export const planOf = (runs: number, maxRuns: number | undefined): LookPlan => ({ runs, maxRuns: Math.max(runs, maxRuns ?? runs) });
 
 export interface SideInfo {
   label: string;
@@ -151,7 +169,10 @@ export interface SummarizeInput {
   records: (SampleRecord | RoundRecord)[];
   sides: SideInfo[];
   plannedRounds: number;
+  // Absent: a fixed number of rounds (plannedRounds).
+  maxRounds?: number;
   minRounds: number;
+  resolution?: Resolution;
   gates: Gates;
   accounting: string;
 }
@@ -201,6 +222,10 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
   const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
   const samples = input.records.filter((r): r is SampleRecord => r.type === "sample");
   const { baseline, accepted, ...counts } = acceptRounds(rounds, samples.filter((s) => !s.warmup), input.sides.length, failed, input.gates);
+  const plan = planOf(input.plannedRounds, input.maxRounds);
+  const confidence = lookConfidence(accepted.length, plan);
+  const resolution = input.resolution ?? DEFAULT_RESOLUTION_SETTING;
+  const interval = (xs: number[]): Interval | null => medianInterval(xs, confidence);
   // Every side's output is compared with the default-mode reference's: a single-threaded run must
   // give the same output too.
   const canonical = refFor(input.sides, { mode: "default" });
@@ -218,8 +243,8 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       role,
       mode: modeOf(info),
       samples: mine.length,
-      wallMs: medianInterval(mine.map((s) => s.wallMs)),
-      cpuMs: cpu.length === mine.length ? medianInterval(cpu) : null,
+      wallMs: interval(mine.map((s) => s.wallMs)),
+      cpuMs: cpu.length === mine.length ? interval(cpu) : null,
       maxRssBytes: rss.length ? median(rss) : null,
       failures: all.filter(failed).length,
       exitCodes: [...new Set(all.map((s) => s.exit.code))],
@@ -235,30 +260,36 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       const { label } = info;
       const ref = refFor(input.sides, info);
       const pairs = accepted.map((ss) => ({ ref: ss.find((s) => s.side === ref.label)!, cand: ss.find((s) => s.side === label)! }));
-      const wallRatio = medianInterval(pairs.map((p) => p.cand.wallMs / p.ref.wallMs));
+      const wallRatio = interval(pairs.map((p) => p.cand.wallMs / p.ref.wallMs));
       const cpuPairs = pairs.filter((p) => p.ref.cpuMs && p.cand.cpuMs !== null);
-      const cpuRatio = cpuPairs.length === pairs.length ? medianInterval(cpuPairs.map((p) => p.cand.cpuMs! / p.ref.cpuMs!)) : null;
+      const cpuRatio = cpuPairs.length === pairs.length ? interval(cpuPairs.map((p) => p.cand.cpuMs! / p.ref.cpuMs!)) : null;
       const anyFailed = samples.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : pairs.length < input.minRounds ? "noisy" : "measured";
-      return { label, ref: ref.label, mode: modeOf(info), state, wallRatio, cpuRatio, call: state === "measured" && wallRatio ? callOf(wallRatio) : null };
+      const refWall = pairs.length ? median(pairs.map((p) => p.ref.wallMs)) : null;
+      const same = sameWithin(resolution.relative, resolution.floorMs, refWall);
+      const call = state === "measured" && wallRatio ? callOf(wallRatio, { confidence, same }) : null;
+      return { label, ref: ref.label, mode: modeOf(info), state, wallRatio, cpuRatio, call, sameWithin: same };
     });
 
   const speedups = modePairs(input.sides).map(({ base, multi, single }) => ({
     base,
-    ratio: medianInterval(accepted.map((ss) => ss.find((s) => s.side === single)!.wallMs / ss.find((s) => s.side === multi)!.wallMs)),
+    ratio: interval(accepted.map((ss) => ss.find((s) => s.side === single)!.wallMs / ss.find((s) => s.side === multi)!.wallMs)),
   }));
 
   return {
     schema: "parallax.bench-summary/1",
     canaryBaselineMs: baseline,
-    rounds: { planned: input.plannedRounds, attempts: counts.attempts, accepted: accepted.length, rejected: counts.rejected, failed: counts.failed },
+    rounds: { planned: plan.runs, max: plan.maxRuns, attempts: counts.attempts, accepted: accepted.length, rejected: counts.rejected, failed: counts.failed },
     minRounds: input.minRounds,
+    confidence,
+    resolution,
     gates: input.gates,
     rejections: counts.rejections,
     accounting: input.accounting,
     sides,
     candidates,
     speedups,
+    settled: candidates.every((c) => c.state === "failed" || (c.call !== null && SETTLED.includes(c.call))),
     clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable),
   };
 }

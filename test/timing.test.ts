@@ -3,7 +3,12 @@ import { test } from "node:test";
 import { detectAccounting } from "../src/host/accounting.ts";
 import { cpuWindow, outsideCores, priorityNote, type CpuSnapshot, type HostLoad, type IdleWait } from "../src/host/machine.ts";
 import { countCpuList, machineState, machineStateNotes, parsePmsetBatt, parsePmsetLowPower, parsePowercfgScheme } from "../src/host/machineState.ts";
-import { medianInterval, callOf, median, quantile } from "../src/timing/stats.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { KeepingJsonlWriter } from "../src/bundle/lines.ts";
+import { runRounds } from "../src/timing/rounds.ts";
+import { callOf, lookConfidence, lookPoints, median, medianInterval, quantile, sameWithin } from "../src/timing/stats.ts";
 import { DEFAULT_GATES, judgeRound, summarizeBench, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
 
 test("quantiles interpolate; the median interval comes from order statistics", () => {
@@ -20,23 +25,72 @@ test("quantiles interpolate; the median interval comes from order statistics", (
   const b = medianInterval(Array.from({ length: 20 }, (_, i) => 20 - i))!;
   assert.deepEqual([b.low, b.high], [6, 15]);
   assert.ok(b.confidence >= 0.95 && b.confidence < 0.96);
-  assert.equal(callOf(a), "faster");
-  assert.equal(callOf({ ...a, low: 0.9, high: 1.05 }), "indistinguishable");
-  assert.equal(callOf({ ...a, estimate: 1.2, low: 1.1, high: 1.3 }), "slower");
-  assert.equal(callOf({ ...a, estimate: 1.0005, low: 1.0001, high: 1.001 }), "indistinguishable", "too small to matter");
+  const rule = { confidence: 0.9, same: 0.05 };
+  assert.equal(callOf(a, rule), "faster");
+  assert.equal(callOf({ ...a, estimate: 1, low: 0.9, high: 1.08 }, rule), "unresolved");
+  assert.equal(callOf({ ...a, estimate: 1, low: 0.97, high: 1.04 }, rule), "same", "within the resolution");
+  assert.equal(callOf({ ...a, estimate: 1.2, low: 1.1, high: 1.3 }, rule), "slower");
+  assert.equal(callOf({ ...a, estimate: 1.0005, low: 1.0001, high: 1.001 }, rule), "same", "too small to matter");
   assert.equal(medianInterval([]), null);
 });
 
-test("calls need 5 rounds: fewer cannot rule out luck", () => {
+test("calls need enough rounds: fewer cannot rule out luck", () => {
   // 3 of 3 rounds below 1 happens by chance 1 time in 4; 5 of 5, 1 in 16.
-  const three = medianInterval([0.97, 0.98, 0.99])!;
+  const single = { confidence: lookConfidence(5, { runs: 5, maxRuns: 5 }), same: 0.005 };
+  assert.ok(Math.abs(single.confidence - 0.9) < 1e-12, "one look: the whole 10% budget");
+  const three = medianInterval([0.97, 0.98, 0.99], single.confidence)!;
   assert.equal(three.confidence, 0.75);
-  assert.equal(callOf(three), "too few rounds");
-  assert.equal(callOf(medianInterval([0.5])!), "too few rounds");
-  const five = medianInterval([0.97, 0.98, 0.99, 0.96, 0.98])!;
+  assert.equal(callOf(three, single), "too few rounds");
+  assert.equal(callOf(medianInterval([0.5])!, single), "too few rounds");
+  const five = medianInterval([0.97, 0.98, 0.99, 0.96, 0.98], single.confidence)!;
   assert.equal(five.confidence, 0.9375);
-  assert.equal(callOf(five), "faster");
-  assert.equal(callOf(medianInterval([0.97, 0.98, 1.01, 0.96, 0.98])!), "indistinguishable", "one round on the other side");
+  assert.equal(callOf(five, single), "faster");
+  assert.equal(callOf(medianInterval([0.97, 0.98, 1.01, 0.96, 0.98], single.confidence)!, single), "unresolved", "one round on the other side");
+});
+
+test("sequential looks: the false-call budget is split in advance", () => {
+  const plan = { runs: 6, maxRuns: 15 };
+  assert.deepEqual(lookPoints(plan), [6, 9, 12, 15]);
+  assert.deepEqual(lookPoints({ runs: 6, maxRuns: 7 }), [6, 7]);
+  assert.deepEqual(lookPoints({ runs: 5, maxRuns: 5 }), [5]);
+  // Half of 10% at the first look, the other half shared by three later looks.
+  assert.ok(Math.abs(lookConfidence(6, plan) - 0.95) < 1e-12);
+  assert.ok(Math.abs(lookConfidence(9, plan) - (1 - 0.05 / 3)) < 1e-12);
+  assert.equal(lookConfidence(10, plan), lookConfidence(12, plan), "between looks: the stricter, later look's");
+  // 6 of 6 on one side reaches 95% (96.9%); 5 of 5 does not (93.75%).
+  assert.equal(callOf(medianInterval([0.9, 0.91, 0.92, 0.93, 0.94, 0.95], 0.95)!, { confidence: 0.95, same: 0.05 }), "faster");
+  assert.equal(callOf(medianInterval([0.9, 0.91, 0.92, 0.93, 0.94], 0.95)!, { confidence: 0.95, same: 0.05 }), "too few rounds");
+  // "same" widens to the absolute floor for tiny figures: 1 ms over a 0.3 ms reference.
+  assert.equal(sameWithin(0.05, 1, 0.3), 1 / 0.3);
+  assert.equal(sameWithin(0.05, 1, 300), 0.05);
+  assert.equal(sameWithin(0.05, 0, null), 0.05);
+});
+
+test("rounds go on past --runs only while unsettled, up to --max-runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "parallax-rounds-"));
+  const count = async (stop: () => boolean, file: string): Promise<number> => {
+    const writer = new KeepingJsonlWriter(join(dir, file));
+    let runs = 0;
+    await runRounds({
+      sides: [{ label: "a" }, { label: "b" }],
+      runs: 3,
+      maxRuns: 9,
+      stop,
+      attempts: 1,
+      idle: { maxBusyCores: Infinity, windowMs: 1, timeoutMs: 1, bootSettleS: 0 },
+      gates: { maxOutsideCores: null, maxCanaryDrift: null },
+      writer,
+      log: () => {},
+      run: async () => {
+        runs++;
+        return { cpuMs: null, failed: false, brief: "" };
+      },
+    });
+    await writer.close();
+    return runs / 2;
+  };
+  assert.equal(await count(() => true, "settled.jsonl"), 3);
+  assert.equal(await count(() => false, "never.jsonl"), 9);
 });
 
 test("outside load: machine CPU minus the harness and the measured commands", () => {

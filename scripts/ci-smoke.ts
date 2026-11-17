@@ -35,8 +35,8 @@ function parallax(name: string, args: string[]): string {
 }
 const json = (dir: string, file: string) => JSON.parse(readFileSync(join(dir, file), "utf8"));
 
-const bench = parallax("bench", ["bench", "--config", "tsconfig.json", "--runs", "3", "--min-runs", "3"]);
-const lsp = parallax("lsp-bench", ["lsp-bench", "--files", "3", "--edits", "5", "--lines", "1", "--runs", "3", "--min-runs", "3"]);
+const bench = parallax("bench", ["bench", "--config", "tsconfig.json", "--runs", "3", "--max-runs", "3", "--min-runs", "3"]);
+const lsp = parallax("lsp-bench", ["lsp-bench", "--files", "3", "--edits", "5", "--lines", "1", "--runs", "3", "--max-runs", "3", "--min-runs", "3"]);
 
 const b = json(bench, "summary.json");
 if (b.accounting !== want.accounting) problems.push(`bench accounting ${b.accounting}, want ${want.accounting}`);

@@ -105,3 +105,13 @@ export class JsonlWriter {
     await once(this.#stream, "finish");
   }
 }
+
+// A JsonlWriter that also keeps every record it wrote, for a command that summarizes as it goes.
+export class KeepingJsonlWriter extends JsonlWriter {
+  readonly records: object[] = [];
+
+  override write(record: object): Promise<void> {
+    this.records.push(record);
+    return super.write(record);
+  }
+}
