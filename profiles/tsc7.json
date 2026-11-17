@@ -3,7 +3,7 @@
   "name": "tsc7",
   "description": "TypeScript 7 (Go, microsoft/typescript-go): the reference.",
   "lsp": { "command": ["{bin}", "--lsp", "--stdio"] },
-  "check": { "command": ["{bin}", "-p", "{config}", "--noEmit"] },
+  "check": { "command": ["{bin}", "-p", "{config}", "--noEmit", "--pretty", "false", "--incremental", "false", "--composite", "false"] },
   "version": { "command": ["{bin}", "--version"] },
   "env": { "clear": ["TSGO_*", "GOMAXPROCS", "GOGC", "GOMEMLIMIT", "GODEBUG"] },
   "processModel": "single",

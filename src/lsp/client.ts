@@ -7,6 +7,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
+import { killTree, treeSpawnOptions } from "../host/processTree.ts";
 import { FrameReader, encodeFrame } from "./framing.ts";
 
 export interface Answer {
@@ -84,7 +85,7 @@ export class LspClient {
     const [bin, ...args] = command;
     if (!bin) throw new Error("empty server command");
     this.#opts = opts;
-    this.proc = spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    this.proc = spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], ...treeSpawnOptions() });
     this.exited = new Promise((resolve) => {
       this.proc.on("exit", (code, signal) => {
         this.#exit = { code, signal };
@@ -182,8 +183,13 @@ export class LspClient {
   // `params` undefined: the message carries no params member (shutdown and exit take none, and
   // tsc 7 rejects `params: null` for them).
   request(method: string, params: unknown, timeoutMs = this.#opts.requestTimeoutMs): Promise<Answer> {
-    if (this.#exit) return Promise.reject(new ServerExited(this.#exit, method));
+    return this.send(method, params, timeoutMs).answer;
+  }
+
+  // A request whose id is known before its answer, so it can be cancelled ($/cancelRequest).
+  send(method: string, params: unknown, timeoutMs = this.#opts.requestTimeoutMs): { id: number; answer: Promise<Answer> } {
     const id = this.#nextId++;
+    if (this.#exit) return { id, answer: Promise.reject(new ServerExited(this.#exit, method)) };
     const start = performance.now();
     const promise = new Promise<Answer>((resolve, reject) => {
       const timer = timeoutMs
@@ -195,23 +201,26 @@ export class LspClient {
       this.#pending.set(id, { method, start, resolve, reject, timer });
     });
     this.#write({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) });
-    return promise;
+    return { id, answer: promise };
+  }
+
+  // Asks the server to drop a request; it still answers (LSP: with error -32800 RequestCancelled, or
+  // with a result it already had).
+  cancel(id: number): void {
+    if (this.#pending.has(id)) this.notify("$/cancelRequest", { id });
+  }
+
+  get pendingCount(): number {
+    return this.#pending.size;
   }
 
   notify(method: string, params: unknown): void {
     this.#write({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) });
   }
 
-  // Kills the server's whole process group.
+  // Kills the server and the processes it started (see host/processTree.ts).
   kill(signal: NodeJS.Signals = "SIGKILL"): void {
-    if (this.proc.pid === undefined) return;
-    try {
-      process.kill(-this.proc.pid, signal);
-    } catch {
-      try {
-        this.proc.kill(signal);
-      } catch {}
-    }
+    killTree(this.proc.pid, signal);
   }
 
   // shutdown, exit, then a kill of the process group if it has not exited after `graceMs`.

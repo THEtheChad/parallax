@@ -11,7 +11,7 @@ import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { loadavg } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import type { Outcome, RunRecord } from "../bundle/bundle.ts";
 import { JsonlWriter } from "../bundle/lines.ts";
 import { crashSignals, type Side } from "../profile/profile.ts";
@@ -44,8 +44,8 @@ async function tail(path: string, bytes: number): Promise<string> {
 
 export async function runServer(opts: RunOptions): Promise<RunRecord> {
   const { bundleDir, id, side, spec } = opts;
-  const file = join("runs", `${id}.jsonl`);
-  const stderrFile = join("runs", `${id}.stderr.log`);
+  const file = posix.join("runs", `${id}.jsonl`);
+  const stderrFile = posix.join("runs", `${id}.stderr.log`);
   const writer = new JsonlWriter(join(bundleDir, file));
   const stderr = createWriteStream(join(bundleDir, stderrFile), { flags: "wx" });
   const startedAt = new Date().toISOString();

@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { loadavg } from "node:os";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { BUNDLE_SCHEMA, corpusInfo, harnessInfo, hostInfo, sideRecord, writeJsonAtomic, type Bundle, type RunRecord } from "../bundle/bundle.ts";
 import { JsonlWriter, readLines } from "../bundle/lines.ts";
 import { compareBundle, type Summary } from "../diff/compare.ts";
@@ -79,7 +79,7 @@ export async function importLspdiff(opts: ImportOptions): Promise<{ dir: string;
   ];
   for (const [name, side, n] of plan) {
     const id = `${side.label}.${n}`;
-    const file = join("runs", `${id}.jsonl`);
+    const file = posix.join("runs", `${id}.jsonl`);
     const answers = await convert(join(from, name), join(dir, file), id, side);
     const run: RunRecord = { id, side: side.label, role: side.role, n, file, stderrFile: null, startedAt: null, durationMs: null, outcome: "imported", answers, importedFrom: join(from, name) };
     bundle.runs.push(run);

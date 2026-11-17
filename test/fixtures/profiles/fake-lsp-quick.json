@@ -1,0 +1,7 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "fake-lsp-quick",
+  "lsp": { "command": ["node", "{bin}"] },
+  "env": { "clear": ["FAKE_*"], "set": { "FAKE_WORK_MS": "1", "FAKE_EDIT_WORK_MS": "3" } },
+  "crash": { "exitCodes": [70], "stderr": ["panicked at "] }
+}

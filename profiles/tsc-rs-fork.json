@@ -3,7 +3,7 @@
   "name": "tsc-rs-fork",
   "description": "The tsc-rs fork (THEtheChad/ts-rust): a Rust port of tsc 7.",
   "lsp": { "command": ["{bin}", "--lsp", "--stdio"] },
-  "check": { "command": ["{bin}", "-p", "{config}", "--noEmit"] },
+  "check": { "command": ["{bin}", "-p", "{config}", "--noEmit", "--pretty", "false", "--incremental", "false", "--composite", "false"] },
   "version": { "command": ["{bin}", "--version"] },
   "env": { "clear": ["GOPORT_*", "TSGO_*", "GOMAXPROCS"] },
   "processModel": "launcher+worker",

@@ -1,0 +1,8 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "fake-check-other",
+  "lsp": { "command": ["node", "{bin}"] },
+  "check": { "command": ["node", "{bin}", "-p", "{config}"] },
+  "env": { "clear": ["FAKE_*"], "set": { "FAKE_CHECK_MS": "20", "FAKE_CHECK_OUTPUT": "something else", "FAKE_CHECK_EXIT": "2" } },
+  "crash": { "stderr": ["^panic: "] }
+}

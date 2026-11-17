@@ -80,7 +80,9 @@ export function validateProfile(value: unknown, where: string): Profile {
 // A profile by built-in name (profiles/<name>.json) or by path.
 export function loadProfile(nameOrPath: string): { profile: Profile; path: string } {
   const path =
-    nameOrPath.endsWith(".json") || nameOrPath.includes("/") ? resolve(nameOrPath) : join(BUILTIN_PROFILE_DIR, `${nameOrPath}.json`);
+    nameOrPath.endsWith(".json") || /[\\/]/.test(nameOrPath) || isAbsolute(nameOrPath)
+      ? resolve(nameOrPath)
+      : join(BUILTIN_PROFILE_DIR, `${nameOrPath}.json`);
   if (!existsSync(path)) throw new Error(`no profile ${JSON.stringify(nameOrPath)} (looked for ${path})`);
   return { profile: validateProfile(JSON.parse(readFileSync(path, "utf8")), path), path };
 }
@@ -151,8 +153,10 @@ export async function bindSide(spec: string, role: Role, extraEnv: Record<string
   const eq = spec.indexOf("=");
   if (eq < 1) throw new Error(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
   const left = spec.slice(0, eq);
-  const colon = left.indexOf(":");
-  const [label, profileName] = colon >= 0 ? [left.slice(0, colon), left.slice(colon + 1)] : [undefined, left];
+  // "label:profile", except that a single letter before ":\" or ":/" is a Windows drive
+  // ("C:\p\x.json"), not a label (so a one-letter label cannot precede an absolute path).
+  const labelled = /^[A-Za-z]:[\\/]/.test(left) ? null : /^([\w.-]+):(.+)$/.exec(left);
+  const [label, profileName] = labelled ? [labelled[1], labelled[2]!] : [undefined, left];
   const { profile, path: profilePath } = loadProfile(profileName);
   const bin = resolve(spec.slice(eq + 1));
   if (!existsSync(bin)) throw new Error(`side ${JSON.stringify(spec)}: no binary at ${bin}`);

@@ -23,11 +23,11 @@ export const userPreferences = {
   },
 };
 
-export function initializeParams(rootDir: string): Record<string, unknown> {
+export function initializeParams(rootDir: string, rootUri: string = fileUri(rootDir)): Record<string, unknown> {
   return {
     processId: null,
-    rootUri: fileUri(rootDir),
-    workspaceFolders: [{ uri: fileUri(rootDir), name: "root" }],
+    rootUri,
+    workspaceFolders: [{ uri: rootUri, name: "root" }],
     initializationOptions: { userPreferences },
     capabilities: {
       general: { positionEncodings: ["utf-16"] },
@@ -79,7 +79,11 @@ export function initializeParams(rootDir: string): Record<string, unknown> {
   };
 }
 
-// The session definition's initialize request, independent of the project root and of the current
-// directory (an absolute placeholder root, so pathToFileURL does not resolve it against the cwd).
+// The session definition's initialize request, independent of the project root, the current
+// directory and the OS: the root is a fixed placeholder URI, never a path (on Windows pathToFileURL
+// would resolve one against the current drive). It is the URI Linux gives "/<root>", so bundles made
+// before this rule keep their hash.
+export const ROOT_PLACEHOLDER_URI = "file:///%3Croot%3E";
+
 export const initializeSha256 = (): string =>
-  createHash("sha256").update(JSON.stringify(initializeParams("/<root>"))).digest("hex");
+  createHash("sha256").update(JSON.stringify(initializeParams("", ROOT_PLACEHOLDER_URI))).digest("hex");
