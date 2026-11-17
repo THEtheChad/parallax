@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detectAccounting } from "../src/host/accounting.ts";
-import { cpuWindow, outsideCores, type CpuSnapshot, type IdleWait } from "../src/host/machine.ts";
+import { cpuWindow, outsideCores, priorityNote, type CpuSnapshot, type HostLoad, type IdleWait } from "../src/host/machine.ts";
 import { bootstrapMedian, callOf, median, quantile } from "../src/timing/stats.ts";
 import { DEFAULT_GATES, judgeRound, summarizeBench, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
 
@@ -142,4 +142,13 @@ test("a crash fails the candidate; another output is reported, not hidden", () =
   ]);
   assert.equal(unstable.sides[1]!.outputStable, false);
   assert.equal(unstable.clean, false);
+});
+
+test("a lowered priority is named the way the OS names it", () => {
+  const at = (priority: number | null) => ({ priority }) as HostLoad;
+  assert.equal(priorityNote(at(0), "linux"), null);
+  assert.equal(priorityNote(at(null), "win32"), null);
+  assert.match(priorityNote(at(10), "linux")!, /\(nice 10\)/);
+  assert.match(priorityNote(at(10), "win32")!, /\(below normal priority class\)/);
+  assert.match(priorityNote(at(19), "win32")!, /\(idle priority class\)/);
 });
