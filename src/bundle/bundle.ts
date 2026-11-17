@@ -10,6 +10,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, hostname, loadavg, platform, release, arch, totalmem, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { machineState, type MachineState } from "../host/machineState.ts";
 import type { Role, Side } from "../profile/profile.ts";
 
 export const BUNDLE_SCHEMA = "parallax.bundle/1";
@@ -81,6 +82,8 @@ export interface HostInfo {
   uptimeS: number;
   loadBefore: number[];
   loadAfter: number[] | null;
+  // Power and CPU-frequency state at the start (host/machineState.ts).
+  state: MachineState;
 }
 
 export interface CorpusInfo {
@@ -133,6 +136,7 @@ export function hostInfo(): HostInfo {
     uptimeS: Math.round(uptime()),
     loadBefore: loadavg(),
     loadAfter: null,
+    state: machineState(),
   };
 }
 

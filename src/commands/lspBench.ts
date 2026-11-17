@@ -22,6 +22,7 @@ import {
 } from "../bundle/bundle.ts";
 import { JsonlWriter } from "../bundle/lines.ts";
 import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
+import { machineStateNotes } from "../host/machineState.ts";
 import { memoryKind, usageBackend } from "../host/serverUsage.ts";
 import { bindSide, type Side } from "../profile/profile.ts";
 import { pickFiles, rel } from "../session/picker.ts";
@@ -130,8 +131,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     opts.log(`warning: ${note}`);
   };
   if (usage === "none") warn("no way to read a running server's CPU and memory on this machine: those figures and outside load are blank");
-  const lowered = priorityNote(bundle.host.load);
-  if (lowered) warn(lowered);
+  for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state)]) if (note) warn(note);
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root))
     warn("the project is on the Windows disk, read from WSL through a slow file share: times include the share");
   const save = (): void => writeJsonAtomic(join(dir, "bundle.json"), bundle);

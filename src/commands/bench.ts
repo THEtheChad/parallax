@@ -25,6 +25,7 @@ import {
 } from "../bundle/bundle.ts";
 import { JsonlWriter } from "../bundle/lines.ts";
 import { detectAccounting } from "../host/accounting.ts";
+import { machineStateNotes } from "../host/machineState.ts";
 import { groupTrackingAvailable } from "../host/procGroup.ts";
 import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
 import { bindSide, crashSignals, expand, type Side } from "../profile/profile.ts";
@@ -123,10 +124,10 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     notes: [],
   };
   if (accounting.startsWith("none")) bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
-  const lowered = priorityNote(bundle.host.load);
-  if (lowered) {
-    bundle.notes.push(lowered);
-    opts.log(`warning: ${lowered}`);
+  for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state)]) {
+    if (!note) continue;
+    bundle.notes.push(note);
+    opts.log(`warning: ${note}`);
   }
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root)) {
     const note = "the project is on the Windows disk, read from WSL through a slow file share: times include the share";

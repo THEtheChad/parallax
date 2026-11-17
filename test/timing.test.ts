@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detectAccounting } from "../src/host/accounting.ts";
 import { cpuWindow, outsideCores, priorityNote, type CpuSnapshot, type HostLoad, type IdleWait } from "../src/host/machine.ts";
+import { countCpuList, machineState, machineStateNotes, parsePmsetBatt, parsePmsetLowPower, parsePowercfgScheme } from "../src/host/machineState.ts";
 import { medianInterval, callOf, median, quantile } from "../src/timing/stats.ts";
 import { DEFAULT_GATES, judgeRound, summarizeBench, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
 
@@ -170,4 +171,18 @@ test("a lowered priority is named the way the OS names it", () => {
   assert.match(priorityNote(at(10), "linux")!, /\(nice 10\)/);
   assert.match(priorityNote(at(10), "win32")!, /\(below normal priority class\)/);
   assert.match(priorityNote(at(19), "win32")!, /\(idle priority class\)/);
+});
+
+test("machine state: power and CPU-frequency probes parse what each OS prints", () => {
+  assert.equal(countCpuList("0-3,8,10-11"), 7);
+  assert.equal(parsePmsetBatt("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t85%; discharging"), "battery");
+  assert.equal(parsePmsetBatt("Now drawing from 'AC Power'"), "ac");
+  assert.equal(parsePmsetLowPower("System-wide power settings:\nCurrently in use:\n lowpowermode         1\n sleep 1"), true);
+  assert.equal(parsePmsetLowPower(" powermode            0\n"), false);
+  assert.equal(parsePowercfgScheme("Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)\r\n"), "Balanced");
+  const quiet = { governors: null, boost: null, smt: null, affinity: null, power: null, lowPowerMode: null, powerPlan: null };
+  assert.deepEqual(machineStateNotes(quiet, 8), []);
+  assert.equal(machineStateNotes({ ...quiet, power: "battery", lowPowerMode: true, affinity: { list: "0-3", cores: 4 } }, 8).length, 3);
+  const here = machineState();
+  assert.ok(typeof here === "object" && "governors" in here);
 });
