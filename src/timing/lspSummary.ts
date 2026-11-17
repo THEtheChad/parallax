@@ -3,10 +3,11 @@
 // median over rounds with an order-statistic interval, and a candidate's is the median of its per-round ratio
 // to the reference, so load steady over a round cancels.
 
-import { acceptRounds, type Gates, type RoundRecord } from "./summary.ts";
+import { acceptRounds, DEFAULT_RESOLUTION_SETTING, modeOf, planOf, refFor, type Gates, type Resolution, type RoundRecord, type SideInfo } from "./summary.ts";
+import type { ThreadMode } from "../profile/profile.ts";
 import type { MetricKey, SessionCounts, SessionMetrics } from "./lspSession.ts";
 import type { Outcome } from "../bundle/bundle.ts";
-import { medianInterval, callOf, type Call, type Interval } from "./stats.ts";
+import { callOf, lookConfidence, median, medianInterval, sameWithin, SETTLED, type Call, type Interval } from "./stats.ts";
 
 export interface SessionRecord {
   type: "session";
@@ -51,6 +52,10 @@ export const METRICS: MetricInfo[] = [
   { key: "typing.semanticTokensP50Ms", label: "typing: semantic tokens p50", unit: "ms" },
   { key: "typing.inlayHintP50Ms", label: "typing: inlay hints p50", unit: "ms" },
   { key: "typing.cpuPerKeyMs", label: "typing: CPU per key", unit: "ms" },
+  { key: "service.keyP50Ms", label: "service: per key p50", unit: "ms" },
+  { key: "service.completionP50Ms", label: "service: completion p50", unit: "ms" },
+  { key: "service.diagnosticP50Ms", label: "service: diagnostics p50", unit: "ms" },
+  { key: "service.cpuPerKeyMs", label: "service: CPU per key", unit: "ms" },
   { key: "session.memoryBytes", label: "session: memory", unit: "bytes" },
 ];
 
@@ -59,6 +64,7 @@ export type CandidateState = "measured" | "noisy" | "failed";
 export interface LspSideSummary {
   label: string;
   role: "ref" | "cand";
+  mode: ThreadMode;
   sessions: number;
   failures: number;
   outcomes: Partial<Record<Outcome, number>>;
@@ -71,15 +77,23 @@ export interface LspSideSummary {
 
 export interface LspCandidateSummary {
   label: string;
+  // The reference it is compared with: the one running in the same thread mode.
+  ref: string;
+  mode: ThreadMode;
   state: CandidateState;
-  metrics: Partial<Record<MetricKey, { ratio: Interval | null; call: Call | null }>>;
+  // sameWithin: the half-width of "same" for that metric (the resolution, or the floor over the
+  // reference's figure).
+  metrics: Partial<Record<MetricKey, { ratio: Interval | null; call: Call | null; sameWithin: number }>>;
 }
 
 export interface LspBenchSummary {
   schema: "parallax.lsp-bench-summary/1";
   canaryBaselineMs: number | null;
-  rounds: { planned: number; attempts: number; accepted: number; rejected: number; failed: number };
+  rounds: { planned: number; max: number; attempts: number; accepted: number; rejected: number; failed: number };
   minRounds: number;
+  // The confidence calls needed at this many accepted rounds (stats.ts lookConfidence).
+  confidence: number;
+  resolution: Resolution;
   gates: Gates;
   rejections: Record<string, number>;
   usage: string;
@@ -89,13 +103,18 @@ export interface LspBenchSummary {
   harnessLagP95Ms: number | null;
   sides: LspSideSummary[];
   candidates: LspCandidateSummary[];
+  // Every metric of every comparison has a call more rounds would not change (or the candidate failed).
+  settled: boolean;
   clean: boolean;
 }
 
 export interface LspSummarizeInput {
   records: (SessionRecord | RoundRecord)[];
-  sides: { label: string; role: "ref" | "cand" }[];
+  sides: SideInfo[];
   plannedRounds: number;
+  // Absent: a fixed number of rounds (plannedRounds).
+  maxRounds?: number;
+  resolution?: Resolution;
   minRounds: number;
   gates: Gates;
   usage: string;
@@ -108,13 +127,16 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
   const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
   const sessions = input.records.filter((r): r is SessionRecord => r.type === "session");
   const { baseline, accepted, ...counts } = acceptRounds(rounds, sessions.filter((s) => !s.warmup), input.sides.length, failed, input.gates);
-  const ref = input.sides.find((s) => s.role === "ref")!;
+  const plan = planOf(input.plannedRounds, input.maxRounds);
+  const confidence = lookConfidence(accepted.length, plan);
+  const resolution = input.resolution ?? DEFAULT_RESOLUTION_SETTING;
   const values = (ss: SessionRecord[], key: MetricKey): number[] | null => {
     const xs = ss.map((s) => s.metrics[key]);
     return xs.length && xs.every((x): x is number => x !== null) ? xs : null;
   };
 
-  const sides: LspSideSummary[] = input.sides.map(({ label, role }) => {
+  const sides: LspSideSummary[] = input.sides.map((info) => {
+    const { label, role } = info;
     const all = sessions.filter((s) => s.side === label);
     const mine = accepted.map((ss) => ss.find((s) => s.side === label)!);
     const outcomes: Partial<Record<Outcome, number>> = {};
@@ -122,11 +144,12 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     const metrics: Partial<Record<MetricKey, Interval | null>> = {};
     for (const { key } of METRICS) {
       const xs = values(mine, key);
-      metrics[key] = xs ? medianInterval(xs) : null;
+      metrics[key] = xs ? medianInterval(xs, confidence) : null;
     }
     return {
       label,
       role,
+      mode: modeOf(info),
       sessions: mine.length,
       failures: all.filter(failed).length,
       outcomes,
@@ -139,25 +162,30 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
 
   const candidates: LspCandidateSummary[] = input.sides
     .filter((s) => s.role === "cand")
-    .map(({ label }) => {
+    .map((info) => {
+      const { label } = info;
+      const ref = refFor(input.sides, info);
       const anyFailed = sessions.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : accepted.length < input.minRounds ? "noisy" : "measured";
       const metrics: LspCandidateSummary["metrics"] = {};
-      for (const { key } of METRICS) {
+      for (const { key, unit } of METRICS) {
         const pairs = accepted.map((ss) => [ss.find((s) => s.side === ref.label)!.metrics[key], ss.find((s) => s.side === label)!.metrics[key]] as const);
         const ok = pairs.length > 0 && pairs.every(([r, c]) => r !== null && r > 0 && c !== null);
-        const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!)) : null;
-        metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio) : null };
+        const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!), confidence) : null;
+        const same = sameWithin(resolution.relative, unit === "ms" ? resolution.floorMs : 0, ok ? median(pairs.map(([r]) => r!)) : null);
+        metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio, { confidence, same }) : null, sameWithin: same };
       }
-      return { label, state, metrics };
+      return { label, ref: ref.label, mode: modeOf(info), state, metrics };
     });
 
   const lags = sessions.filter((s) => !s.warmup).map((s) => s.counts.lagP95Ms).filter((x): x is number => x !== null);
   return {
     schema: "parallax.lsp-bench-summary/1",
     canaryBaselineMs: baseline,
-    rounds: { planned: input.plannedRounds, attempts: counts.attempts, accepted: accepted.length, rejected: counts.rejected, failed: counts.failed },
+    rounds: { planned: plan.runs, max: plan.maxRuns, attempts: counts.attempts, accepted: accepted.length, rejected: counts.rejected, failed: counts.failed },
     minRounds: input.minRounds,
+    confidence,
+    resolution,
     gates: input.gates,
     rejections: counts.rejections,
     usage: input.usage,
@@ -165,6 +193,9 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     harnessLagP95Ms: lags.length ? Math.max(...lags) : null,
     sides,
     candidates,
+    settled: candidates.every(
+      (c) => c.state === "failed" || Object.values(c.metrics).every((m) => !m || m.ratio === null || (m.call !== null && SETTLED.includes(m.call))),
+    ),
     clean: candidates.every((c) => c.state === "measured"),
   };
 }

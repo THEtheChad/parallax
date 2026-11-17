@@ -5,5 +5,6 @@
   "check": { "command": ["node", "{bin}", "-p", "{config}"] },
   "env": { "clear": ["FAKE_*"], "set": { "FAKE_CHECK_MS": "300", "FAKE_CHECK_OUTPUT": "src/a.ts(1,1): error TS1: x", "FAKE_CHECK_EXIT": "2", "FAKE_CHECK_LAUNCHER": "1" } },
   "processModel": "launcher+worker",
-  "crash": { "stderr": ["^panic: "] }
+  "crash": { "stderr": ["^panic: "] },
+  "singleThreaded": { "check": { "env": { "FAKE_SINGLE_THREADED": "1" } }, "lsp": { "env": { "FAKE_SINGLE_THREADED": "1" } } }
 }

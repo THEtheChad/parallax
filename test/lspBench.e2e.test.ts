@@ -44,7 +44,9 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
     edits: 4,
     lines: 1,
     intervalMs: 30,
+    threads: ["default"],
     runs: 5,
+    maxRuns: 5,
     minRounds: 3,
     warmup: 1,
     attempts: 1,
@@ -68,15 +70,22 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
   assert.ok(typing.every((r) => r.answered >= r.due && r.sent >= r.due));
   assert.ok(typing.some((r) => r.cancelled), "the slow server's queue gets requests cancelled");
   assert.equal(log.filter((r) => r.type === "request" && r.phase === "edit").length, 4 * 3);
+  // The service phase: one request at a time, nothing cancelled, each sent after the previous answer.
+  const service = log.filter((r) => r.type === "request" && r.phase === "service");
+  assert.ok(service.length > 0 && service.every((r) => !r.cancelled));
+  for (let i = 1; i < service.length; i++) assert.ok(service[i]!.sent >= service[i - 1]!.answered, "closed loop");
 
   const [quick] = summary.candidates;
   assert.equal(quick!.state, "measured");
   // 8 ms per request plus 30 ms per update against 1 and 3.
   assert.equal(quick!.metrics["edit.firstRequestMs"]!.call, "faster");
   assert.equal(quick!.metrics["typing.completionP95Ms"]!.call, "faster");
+  assert.equal(quick!.metrics["service.keyP50Ms"]!.call, "faster");
   const slow = summary.sides.find((s) => s.label === "slow")!;
   assert.ok(slow.metrics["edit.firstRequestMs"]!.estimate >= 30, "the first request after an edit pays for the update");
   assert.ok(slow.metrics["edit.secondRequestMs"]!.estimate < slow.metrics["edit.firstRequestMs"]!.estimate);
+  // A key's requests one after another: the update (30 ms) plus 8 ms per request at least.
+  assert.ok(slow.metrics["service.keyP50Ms"]!.estimate >= 38, `service per key ${slow.metrics["service.keyP50Ms"]!.estimate}`);
   if (usageBackend() !== "none") {
     assert.ok(slow.metrics["edit.cpuPerEditMs"]!.estimate >= 25, `cpu per edit ${slow.metrics["edit.cpuPerEditMs"]!.estimate}`);
     assert.ok(slow.metrics["session.memoryBytes"]!.estimate > 1 << 20);
@@ -98,7 +107,9 @@ test("lsp-bench: a server that crashes mid-session fails its candidate", async (
     edits: 4,
     lines: 1,
     intervalMs: 20,
+    threads: ["default"],
     runs: 1,
+    maxRuns: 1,
     minRounds: 1,
     warmup: 0,
     attempts: 1,

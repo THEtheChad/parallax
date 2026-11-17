@@ -31,7 +31,9 @@ test("bench: alternating rounds, paired ratios, outputs compared, every sample k
     out,
     ref: side("fake-check-ref"),
     cands: [side("fake-check-fast"), side("fake-check-other")],
+    threads: ["default"],
     runs: 5,
+    maxRuns: 5,
     minRounds: 3,
     warmup: 1,
     attempts: 1,
@@ -76,7 +78,9 @@ test("bench: a worker its launcher never waits for is still accounted", async ()
     out: join(mkdtempSync(join(tmpdir(), "parallax-bench-")), "b"),
     ref: side("fake-check-ref"),
     cands: [side("fake-check-launcher")],
+    threads: ["default"],
     runs: 1,
+    maxRuns: 1,
     minRounds: 1,
     warmup: 0,
     attempts: 1,
@@ -104,7 +108,7 @@ test("bench: a crashing candidate is failed, and the CLI exits 1", () => {
     { encoding: "utf8" },
   );
   assert.equal(r.status, 1, r.stderr);
-  assert.match(r.stdout, /fake-check-crash\s+failed/);
+  assert.match(r.stdout, /fake-check-crash\s+fake-check-ref\s+failed/);
   assert.equal(spawnSync(process.execPath, [cli, "bench-summary", out], { encoding: "utf8" }).status, 1);
   assert.equal(spawnSync(process.execPath, [cli, "bench", "--project", makeProject()], { encoding: "utf8" }).status, 2);
 });

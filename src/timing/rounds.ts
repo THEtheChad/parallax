@@ -4,6 +4,8 @@
 //             (ref, A, B / B, A, ref / ...) so no side always runs first or after the same neighbour
 //   retries   a disturbed round (see summary.ts) is run again, up to `attempts` times; a round in which
 //             a side failed is not retried (a crash is a result, not noise)
+//   more      after `runs` rounds, `stop` decides after each round whether the bench is done (it looks
+//             only at its look points; stats.ts lookPoints); otherwise rounds go on up to `maxRuns`
 //
 // Every round goes to the writer as it happens, rejected ones included; the samples are written by
 // `run` itself.
@@ -11,6 +13,7 @@
 import type { JsonlWriter } from "../bundle/lines.ts";
 import { cpuSnapshot, cpuWindow, outsideCores, waitForIdle, type IdleGate } from "../host/machine.ts";
 import { runCanary } from "./canary.ts";
+import { lookPoints, type LookPlan } from "./stats.ts";
 import { judgeRound, type Gates, type RoundRecord } from "./summary.ts";
 
 export interface SideRun {
@@ -24,6 +27,9 @@ export interface SideRun {
 export interface RoundsOptions<S extends { label: string }> {
   sides: S[];
   runs: number;
+  // Rounds may go on past `runs` up to this many while `stop` says no (default: runs).
+  maxRuns?: number;
+  stop?: () => boolean;
   attempts: number;
   idle: IdleGate;
   gates: Gates;
@@ -35,7 +41,9 @@ export interface RoundsOptions<S extends { label: string }> {
 export async function runRounds<S extends { label: string }>(o: RoundsOptions<S>): Promise<void> {
   runCanary(); // warm the canary's code before its first timed use
   let fastestCanary = Infinity;
-  for (let round = 1; round <= o.runs; round++) {
+  const maxRuns = Math.max(o.runs, o.maxRuns ?? o.runs);
+  for (let round = 1; round <= maxRuns; round++) {
+    if (round > o.runs && o.stop?.()) break;
     const order = round % 2 ? o.sides : [...o.sides].reverse();
     for (let attempt = 1; attempt <= o.attempts; attempt++) {
       const idle = await waitForIdle(o.idle, o.log);
@@ -62,4 +70,20 @@ export async function runRounds<S extends { label: string }>(o: RoundsOptions<S>
       if (!rejected.length) break;
     }
   }
+}
+
+// The `stop` rule of a sequential bench: done when the accepted rounds are at one of the plan's look
+// points and every call is settled. Between look points it never stops, so the false-call budget
+// split across the looks (stats.ts lookConfidence) holds.
+export function settledAtLook(
+  s: { rounds: { accepted: number }; settled: boolean; candidates: { state: string }[] },
+  plan: LookPlan,
+  log: (msg: string) => void,
+): boolean {
+  // Nothing left to measure: no call is made, so stopping costs no false-call budget.
+  if (s.candidates.every((c) => c.state === "failed")) return true;
+  const n = s.rounds.accepted;
+  if (!lookPoints(plan).includes(n)) return false;
+  log(`look at ${n} accepted rounds: ${s.settled ? "every call settled, stopping" : `unsettled calls remain, going on (up to ${plan.maxRuns})`}`);
+  return s.settled;
 }

@@ -26,7 +26,23 @@ export interface Profile {
   // Exit codes of an orderly shutdown + exit (default [0]; tsc 7 exits 1 with "context canceled").
   shutdown?: { exitCodes?: number[] };
   knownGaps?: string[];
+  // How to run the server single-threaded: arguments appended to the command and environment
+  // variables set (after `env.clear`), separately for the CLI check and the language server.
+  singleThreaded?: { check?: ThreadSetting; lsp?: ThreadSetting };
 }
+
+export interface ThreadSetting {
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+// "default": however the implementation chooses to use the machine's cores. "single": one thread of
+// work, as the profile's `singleThreaded` says, which separates the algorithm's cost from how well it
+// uses cores and is far less noisy.
+export type ThreadMode = "default" | "single";
+export const THREAD_MODES: readonly ThreadMode[] = ["default", "single"];
+// Label suffix of a side's single-threaded variant ("tsrs@1t").
+export const SINGLE_SUFFIX = "@1t";
 
 export const BUILTIN_PROFILE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../profiles");
 
@@ -74,6 +90,17 @@ export function validateProfile(value: unknown, where: string): Profile {
   if (shutdown?.exitCodes !== undefined && !(Array.isArray(shutdown.exitCodes) && shutdown.exitCodes.every(Number.isInteger)))
     fail(where, "shutdown.exitCodes must be integers");
   if (p.knownGaps !== undefined && !isStringArray(p.knownGaps)) fail(where, "knownGaps must be a string array");
+  const single = p.singleThreaded as Record<string, unknown> | undefined;
+  if (single !== undefined) {
+    if (typeof single !== "object") fail(where, "singleThreaded must be an object");
+    for (const k of ["check", "lsp"] as const) {
+      const t = single[k] as Record<string, unknown> | undefined;
+      if (t === undefined) continue;
+      if (t.args !== undefined && !isStringArray(t.args)) fail(where, `singleThreaded.${k}.args must be a string array`);
+      if (t.env !== undefined && (typeof t.env !== "object" || !Object.values(t.env as object).every((v) => typeof v === "string")))
+        fail(where, `singleThreaded.${k}.env must map names to strings`);
+    }
+  }
   return p as unknown as Profile;
 }
 
@@ -144,8 +171,47 @@ export interface Side {
   version: string | null;
   vars: Vars;
   lspCommand: string[];
+  // Extra arguments for the CLI check command (single-threaded mode).
+  checkArgs: string[];
   env: ResolvedEnv;
   lib: { uriPrefix?: string; dir?: string } | undefined;
+  mode: ThreadMode;
+  // The side's label without the thread-mode suffix.
+  base: string;
+}
+
+// Every side in every mode: all sides in the first mode, then all in the next, so a round runs one
+// mode's sides together.
+export function sidesInModes(sides: Side[], modes: readonly ThreadMode[], use: "check" | "lsp"): Side[] {
+  if (!modes.length) throw new Error("--threads needs at least one mode");
+  return modes.flatMap((m) => sides.map((s) => withThreads(s, m, use)));
+}
+
+export function parseThreadModes(value: string): ThreadMode[] {
+  if (value === "both") return [...THREAD_MODES];
+  const modes = value.split(",").map((v) => v.trim());
+  for (const m of modes) if (!THREAD_MODES.includes(m as ThreadMode)) throw new Error(`--threads: want default, single or both (got ${JSON.stringify(m)})`);
+  return [...new Set(modes as ThreadMode[])];
+}
+
+// A side in the given thread mode, for the check command (`bench`) or the language server
+// (`lsp-bench`). The default mode is the side as bound.
+export function withThreads(side: Side, mode: ThreadMode, use: "check" | "lsp"): Side {
+  if (mode === "default") return side;
+  const t = side.profile.singleThreaded?.[use];
+  if (!t)
+    throw new Error(
+      `profile ${side.profile.name} does not say how to run its ${use === "check" ? "check command" : "language server"} single-threaded (singleThreaded.${use}); use --threads default`,
+    );
+  return {
+    ...side,
+    label: `${side.label}${SINGLE_SUFFIX}`,
+    mode,
+    base: side.label,
+    lspCommand: use === "lsp" ? [...side.lspCommand, ...(t.args ?? [])] : side.lspCommand,
+    checkArgs: use === "check" ? [...(t.args ?? [])] : [],
+    env: resolveEnv(side.profile, process.env, { ...side.env.set, ...(t.env ?? {}) }),
+  };
 }
 
 // Binds `profile=bin` (or `label:profile=bin`) into a side. The label defaults to the profile name.
@@ -180,8 +246,11 @@ export async function bindSide(spec: string, role: Role, extraEnv: Record<string
     version,
     vars,
     lspCommand: profile.lsp.command.map((t) => expand(t, vars)),
+    checkArgs: [],
     env,
     lib,
+    mode: "default",
+    base: label ?? profile.name,
   };
 }
 

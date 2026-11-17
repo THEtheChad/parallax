@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detectAccounting } from "../src/host/accounting.ts";
 import { cpuWindow, outsideCores, priorityNote, type CpuSnapshot, type HostLoad, type IdleWait } from "../src/host/machine.ts";
-import { medianInterval, callOf, median, quantile } from "../src/timing/stats.ts";
-import { DEFAULT_GATES, judgeRound, summarizeBench, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
+import { countCpuList, machineState, machineStateNotes, parsePmsetBatt, parsePmsetLowPower, parsePowercfgScheme } from "../src/host/machineState.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { KeepingJsonlWriter } from "../src/bundle/lines.ts";
+import { runRounds } from "../src/timing/rounds.ts";
+import { callOf, lookConfidence, lookPoints, median, medianInterval, quantile, sameWithin } from "../src/timing/stats.ts";
+import { parsePerfStat } from "../src/host/counters.ts";
+import { DEFAULT_GATES, judgeRound, summarizeBench, summarizeCounters, type CounterRecord, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
 
 test("quantiles interpolate; the median interval comes from order statistics", () => {
   assert.equal(median([3, 1, 2]), 2);
@@ -19,23 +26,72 @@ test("quantiles interpolate; the median interval comes from order statistics", (
   const b = medianInterval(Array.from({ length: 20 }, (_, i) => 20 - i))!;
   assert.deepEqual([b.low, b.high], [6, 15]);
   assert.ok(b.confidence >= 0.95 && b.confidence < 0.96);
-  assert.equal(callOf(a), "faster");
-  assert.equal(callOf({ ...a, low: 0.9, high: 1.05 }), "indistinguishable");
-  assert.equal(callOf({ ...a, estimate: 1.2, low: 1.1, high: 1.3 }), "slower");
-  assert.equal(callOf({ ...a, estimate: 1.0005, low: 1.0001, high: 1.001 }), "indistinguishable", "too small to matter");
+  const rule = { confidence: 0.9, same: 0.05 };
+  assert.equal(callOf(a, rule), "faster");
+  assert.equal(callOf({ ...a, estimate: 1, low: 0.9, high: 1.08 }, rule), "unresolved");
+  assert.equal(callOf({ ...a, estimate: 1, low: 0.97, high: 1.04 }, rule), "same", "within the resolution");
+  assert.equal(callOf({ ...a, estimate: 1.2, low: 1.1, high: 1.3 }, rule), "slower");
+  assert.equal(callOf({ ...a, estimate: 1.0005, low: 1.0001, high: 1.001 }, rule), "same", "too small to matter");
   assert.equal(medianInterval([]), null);
 });
 
-test("calls need 5 rounds: fewer cannot rule out luck", () => {
+test("calls need enough rounds: fewer cannot rule out luck", () => {
   // 3 of 3 rounds below 1 happens by chance 1 time in 4; 5 of 5, 1 in 16.
-  const three = medianInterval([0.97, 0.98, 0.99])!;
+  const single = { confidence: lookConfidence(5, { runs: 5, maxRuns: 5 }), same: 0.005 };
+  assert.ok(Math.abs(single.confidence - 0.9) < 1e-12, "one look: the whole 10% budget");
+  const three = medianInterval([0.97, 0.98, 0.99], single.confidence)!;
   assert.equal(three.confidence, 0.75);
-  assert.equal(callOf(three), "too few rounds");
-  assert.equal(callOf(medianInterval([0.5])!), "too few rounds");
-  const five = medianInterval([0.97, 0.98, 0.99, 0.96, 0.98])!;
+  assert.equal(callOf(three, single), "too few rounds");
+  assert.equal(callOf(medianInterval([0.5])!, single), "too few rounds");
+  const five = medianInterval([0.97, 0.98, 0.99, 0.96, 0.98], single.confidence)!;
   assert.equal(five.confidence, 0.9375);
-  assert.equal(callOf(five), "faster");
-  assert.equal(callOf(medianInterval([0.97, 0.98, 1.01, 0.96, 0.98])!), "indistinguishable", "one round on the other side");
+  assert.equal(callOf(five, single), "faster");
+  assert.equal(callOf(medianInterval([0.97, 0.98, 1.01, 0.96, 0.98], single.confidence)!, single), "unresolved", "one round on the other side");
+});
+
+test("sequential looks: the false-call budget is split in advance", () => {
+  const plan = { runs: 6, maxRuns: 15 };
+  assert.deepEqual(lookPoints(plan), [6, 9, 12, 15]);
+  assert.deepEqual(lookPoints({ runs: 6, maxRuns: 7 }), [6, 7]);
+  assert.deepEqual(lookPoints({ runs: 5, maxRuns: 5 }), [5]);
+  // Half of 10% at the first look, the other half shared by three later looks.
+  assert.ok(Math.abs(lookConfidence(6, plan) - 0.95) < 1e-12);
+  assert.ok(Math.abs(lookConfidence(9, plan) - (1 - 0.05 / 3)) < 1e-12);
+  assert.equal(lookConfidence(10, plan), lookConfidence(12, plan), "between looks: the stricter, later look's");
+  // 6 of 6 on one side reaches 95% (96.9%); 5 of 5 does not (93.75%).
+  assert.equal(callOf(medianInterval([0.9, 0.91, 0.92, 0.93, 0.94, 0.95], 0.95)!, { confidence: 0.95, same: 0.05 }), "faster");
+  assert.equal(callOf(medianInterval([0.9, 0.91, 0.92, 0.93, 0.94], 0.95)!, { confidence: 0.95, same: 0.05 }), "too few rounds");
+  // "same" widens to the absolute floor for tiny figures: 1 ms over a 0.3 ms reference.
+  assert.equal(sameWithin(0.05, 1, 0.3), 1 / 0.3);
+  assert.equal(sameWithin(0.05, 1, 300), 0.05);
+  assert.equal(sameWithin(0.05, 0, null), 0.05);
+});
+
+test("rounds go on past --runs only while unsettled, up to --max-runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "parallax-rounds-"));
+  const count = async (stop: () => boolean, file: string): Promise<number> => {
+    const writer = new KeepingJsonlWriter(join(dir, file));
+    let runs = 0;
+    await runRounds({
+      sides: [{ label: "a" }, { label: "b" }],
+      runs: 3,
+      maxRuns: 9,
+      stop,
+      attempts: 1,
+      idle: { maxBusyCores: Infinity, windowMs: 1, timeoutMs: 1, bootSettleS: 0 },
+      gates: { maxOutsideCores: null, maxCanaryDrift: null },
+      writer,
+      log: () => {},
+      run: async () => {
+        runs++;
+        return { cpuMs: null, failed: false, brief: "" };
+      },
+    });
+    await writer.close();
+    return runs / 2;
+  };
+  assert.equal(await count(() => true, "settled.jsonl"), 3);
+  assert.equal(await count(() => false, "never.jsonl"), 9);
 });
 
 test("outside load: machine CPU minus the harness and the measured commands", () => {
@@ -170,4 +226,76 @@ test("a lowered priority is named the way the OS names it", () => {
   assert.match(priorityNote(at(10), "linux")!, /\(nice 10\)/);
   assert.match(priorityNote(at(10), "win32")!, /\(below normal priority class\)/);
   assert.match(priorityNote(at(19), "win32")!, /\(idle priority class\)/);
+});
+
+test("machine state: power and CPU-frequency probes parse what each OS prints", () => {
+  assert.equal(countCpuList("0-3,8,10-11"), 7);
+  assert.equal(parsePmsetBatt("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t85%; discharging"), "battery");
+  assert.equal(parsePmsetBatt("Now drawing from 'AC Power'"), "ac");
+  assert.equal(parsePmsetLowPower("System-wide power settings:\nCurrently in use:\n lowpowermode         1\n sleep 1"), true);
+  assert.equal(parsePmsetLowPower(" powermode            0\n"), false);
+  assert.equal(parsePowercfgScheme("Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)\r\n"), "Balanced");
+  const quiet = { governors: null, boost: null, smt: null, affinity: null, power: null, lowPowerMode: null, powerPlan: null };
+  assert.deepEqual(machineStateNotes(quiet, 8), []);
+  assert.equal(machineStateNotes({ ...quiet, power: "battery", lowPowerMode: true, affinity: { list: "0-3", cores: 4 } }, 8).length, 3);
+  const here = machineState();
+  assert.ok(typeof here === "object" && "governors" in here);
+});
+
+test("thread modes: each candidate is compared with the reference in its own mode; speedup per implementation", () => {
+  const records: (SampleRecord | RoundRecord)[] = [];
+  // Default mode: ref 100, cand 50 (0.5x). Single-threaded: ref 400, cand 100 (0.25x): the
+  // candidate gains less from threads (2x) than the reference (4x).
+  const walls: Record<string, number> = { ref: 100, cand: 50, "ref@1t": 400, "cand@1t": 100 };
+  for (let round = 1; round <= 5; round++) {
+    const jitter = 1 + round / 100;
+    for (const [side, wall] of Object.entries(walls)) {
+      records.push({
+        type: "sample", side, role: side.startsWith("ref") ? "ref" : "cand", round, attempt: 1, warmup: false, startedAt: "",
+        wallMs: wall * jitter, drainMs: wall, exit: { code: 0, signal: null }, timedOut: false, crashSignals: [], stdoutSha256: "same",
+        stderrSha256: "", outputLines: 0, cpuMs: wall, userMs: wall, sysMs: 0, adoptedCpuMs: null, adopted: null, maxRssBytes: 1, window: win, outsideCores: 0,
+      });
+    }
+    records.push({ type: "round", round, attempt: 1, order: Object.keys(walls), idle: idle(), canaryBeforeMs: 20, canaryAfterMs: 20, window: win, outsideCores: 0, rejected: [] });
+  }
+  const s = summarizeBench({
+    records,
+    sides: [
+      { label: "ref", role: "ref", mode: "default", base: "ref" },
+      { label: "cand", role: "cand", mode: "default", base: "cand" },
+      { label: "ref@1t", role: "ref", mode: "single", base: "ref" },
+      { label: "cand@1t", role: "cand", mode: "single", base: "cand" },
+    ],
+    plannedRounds: 5,
+    minRounds: 3,
+    gates: DEFAULT_GATES,
+    accounting: "gnu-time",
+  });
+  const byLabel = Object.fromEntries(s.candidates.map((c) => [c.label, c]));
+  assert.equal(byLabel.cand!.ref, "ref");
+  assert.ok(Math.abs(byLabel.cand!.wallRatio!.estimate - 0.5) < 1e-9);
+  assert.equal(byLabel["cand@1t"]!.ref, "ref@1t");
+  assert.ok(Math.abs(byLabel["cand@1t"]!.wallRatio!.estimate - 0.25) < 1e-9);
+  const speedup = Object.fromEntries(s.speedups.map((x) => [x.base, x.ratio!.estimate]));
+  assert.ok(Math.abs(speedup.ref! - 4) < 1e-9 && Math.abs(speedup.cand! - 2) < 1e-9);
+  assert.equal(s.sides.find((x) => x.label === "ref@1t")!.outputMatchesRef, true, "a single-threaded run must give the reference's output too");
+  assert.equal(s.clean, true);
+});
+
+test("counters: perf stat's CSV, and a side's median and spread over its counted runs", () => {
+  const c = parsePerfStat(
+    "1472034511,,instructions:u,426819,100.00,2.55,insn per cycle\n578101234,,cycles:u,426819,100.00,0.890,GHz\n144.70,msec,task-clock:u,426819,100.00,0.98,CPUs utilized\n3,,context-switches:u,1,100.00,,\n<not counted>,,cpu-migrations:u,0,0.00,,\n9876,,page-faults:u,1,100.00,,\n",
+  )!;
+  assert.deepEqual(c, { instructions: 1472034511, cycles: 578101234, taskClockMs: 144.7, pageFaults: 9876 });
+  assert.equal(parsePerfStat("<not supported>,,instructions:u,0,0.00,,\n")!.instructions, null);
+  assert.equal(parsePerfStat(""), null);
+  const run = (n: number, instructions: number): CounterRecord => ({
+    type: "counters", side: "a", run: n, exit: { code: 0, signal: null }, timedOut: false,
+    counters: { instructions, cycles: instructions / 2, taskClockMs: 100, pageFaults: 10 },
+  });
+  const [a] = summarizeCounters([run(1, 1000), run(2, 1010), run(3, 990)], ["a"]);
+  assert.equal(a!.runs, 3);
+  assert.equal(a!.instructions!.median, 1000);
+  assert.ok(Math.abs(a!.instructions!.spread - 0.02) < 1e-12);
+  assert.equal(a!.ipc, 2);
 });

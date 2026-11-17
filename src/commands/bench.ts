@@ -23,21 +23,34 @@ import {
   type HostInfo,
   type SideRecord,
 } from "../bundle/bundle.ts";
-import { JsonlWriter } from "../bundle/lines.ts";
+import { KeepingJsonlWriter } from "../bundle/lines.ts";
 import { detectAccounting } from "../host/accounting.ts";
+import { machineStateNotes } from "../host/machineState.ts";
 import { groupTrackingAvailable } from "../host/procGroup.ts";
 import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate } from "../host/machine.ts";
-import { bindSide, crashSignals, expand, type Side } from "../profile/profile.ts";
+import { bindSide, crashSignals, expand, sidesInModes, THREAD_MODES, type Side, type ThreadMode } from "../profile/profile.ts";
 import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
-import { runRounds } from "../timing/rounds.ts";
+import { runRounds, settledAtLook } from "../timing/rounds.ts";
+import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
 import { runCommand } from "../timing/runCommand.ts";
-import { DEFAULT_GATES, summarizeBench, type BenchSummary, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
+import { DEFAULT_GATES, summarizeBench, type BenchSummary, type CounterRecord, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
+import { counterBackend, countCommand, type CounterBackend } from "../host/counters.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
 
 export interface BenchSettings {
   config: string;
+  // Thread modes each side runs in (absent in bundles from before modes: default only).
+  threads: ThreadMode[];
+  // Rounds before the first look, and the most rounds a bench runs while some call is unsettled
+  // (stats.ts lookPoints; absent in bundles from before sequential rounds: runs).
   runs: number;
+  maxRuns: number;
   minRounds: number;
+  // "same" means within this fraction of the reference, or within resolutionMs where that is larger.
+  resolution: number;
+  resolutionMs: number;
+  // Counted runs per side after the timed rounds, where a counter backend works (host/counters.ts).
+  counterRuns: number;
   warmup: number;
   attempts: number;
   timeoutMs: number;
@@ -52,7 +65,7 @@ export interface BenchBundle {
   createdAt: string;
   finishedAt: string | null;
   harness: ReturnType<typeof harnessInfo>;
-  host: HostInfo & { load: HostLoad; accounting: string };
+  host: HostInfo & { load: HostLoad; accounting: string; counters?: CounterBackend };
   corpus: CorpusInfo;
   settings: BenchSettings;
   canary: { version: string; size: number };
@@ -80,7 +93,7 @@ const offIfUnlimited = (g: Gates): Gates => ({
 
 export function checkCommand(side: Side, config: string, project: string): string[] {
   if (!side.profile.check) throw new Error(`profile ${side.profile.name} has no check command`);
-  return side.profile.check.command.map((t) => expand(t, { ...side.vars, config, project }));
+  return [...side.profile.check.command.map((t) => expand(t, { ...side.vars, config, project })), ...side.checkArgs];
 }
 
 export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: BenchBundle; summary: BenchSummary }> {
@@ -88,8 +101,13 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   if (!existsSync(root)) throw new Error(`no project at ${root}`);
   const settings: BenchSettings = {
     config: opts.config ?? "tsconfig.json",
-    runs: opts.runs ?? 5,
+    threads: opts.threads ?? [...THREAD_MODES],
+    runs: opts.runs ?? 6,
+    maxRuns: opts.maxRuns ?? Math.max(15, opts.runs ?? 6),
     minRounds: opts.minRounds ?? 3,
+    resolution: opts.resolution ?? DEFAULT_RESOLUTION,
+    resolutionMs: opts.resolutionMs ?? DEFAULT_RESOLUTION_MS,
+    counterRuns: opts.counterRuns ?? 3,
     warmup: opts.warmup ?? 1,
     attempts: opts.attempts ?? 3,
     timeoutMs: opts.timeoutMs ?? 600_000,
@@ -98,8 +116,10 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   };
   if (!existsSync(resolve(root, settings.config))) throw new Error(`no ${settings.config} in ${root}`);
   if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
-  const sides: Side[] = [await bindSide(opts.ref, "ref")];
-  for (const c of opts.cands) sides.push(await bindSide(c, "cand"));
+  if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
+  const bound: Side[] = [await bindSide(opts.ref, "ref")];
+  for (const c of opts.cands) bound.push(await bindSide(c, "cand"));
+  const sides = sidesInModes(bound, settings.threads, "check");
   const labels = sides.map((s) => s.label);
   if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
   const commands = new Map(sides.map((s) => [s.label, checkCommand(s, settings.config, root)]));
@@ -115,7 +135,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     createdAt: new Date().toISOString(),
     finishedAt: null,
     harness: harnessInfo(),
-    host: { ...hostInfo(), load: hostLoad(), accounting },
+    host: { ...hostInfo(), load: hostLoad(), accounting, counters: settings.counterRuns > 0 ? counterBackend() : "none" },
     corpus: corpusInfo(root),
     settings,
     canary: { version: CANARY_VERSION, size: CANARY_SIZE },
@@ -123,10 +143,10 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     notes: [],
   };
   if (accounting.startsWith("none")) bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
-  const lowered = priorityNote(bundle.host.load);
-  if (lowered) {
-    bundle.notes.push(lowered);
-    opts.log(`warning: ${lowered}`);
+  for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state)]) {
+    if (!note) continue;
+    bundle.notes.push(note);
+    opts.log(`warning: ${note}`);
   }
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root)) {
     const note = "the project is on the Windows disk, read from WSL through a slow file share: times include the share";
@@ -137,7 +157,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   save();
   opts.log(`bundle ${dir}\nproject ${root} (${settings.config}); accounting ${accounting}`);
 
-  const writer = new JsonlWriter(join(dir, "samples.jsonl"));
+  const writer = new KeepingJsonlWriter(join(dir, "samples.jsonl"));
   const sample = async (side: Side, round: number, attempt: number, warmup: boolean): Promise<SampleRecord> => {
     const r = await runCommand({ command: commands.get(side.label)!, cwd: root, env: side.env.env, timeoutMs: settings.timeoutMs, outputsDir });
     const { stderrTail, usage, group, cpuMs, maxRssBytes, ...rest } = r;
@@ -169,6 +189,8 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   await runRounds({
     sides,
     runs: settings.runs,
+    maxRuns: settings.maxRuns,
+    stop: () => settledAtLook(summarize(bundle, writer.records as Records), settings, opts.log),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -179,6 +201,17 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
       return { cpuMs: s.cpuMs, failed: s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0, brief: fmtMs(s.wallMs) };
     },
   });
+  if (bundle.host.counters === "perf") {
+    opts.log(`counting: ${settings.counterRuns} runs per side under perf stat`);
+    for (let run = 1; run <= settings.counterRuns; run++) {
+      const order = run % 2 ? sides : [...sides].reverse();
+      for (const side of order) {
+        const c = await countCommand({ command: commands.get(side.label)!, cwd: root, env: side.env.env, timeoutMs: settings.timeoutMs });
+        const rec: CounterRecord = { type: "counters", side: side.label, run, ...c };
+        await writer.write(rec);
+      }
+    }
+  }
   await writer.close();
 
   const after = corpusState(root);
@@ -199,20 +232,30 @@ export function readBenchBundle(dir: string): BenchBundle {
   return b;
 }
 
+type Records = (SampleRecord | RoundRecord | CounterRecord)[];
+
+function summarize(bundle: BenchBundle, records: Records, gates: Gates = bundle.settings.gates): BenchSummary {
+  const st = bundle.settings;
+  return summarizeBench({
+    records,
+    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role, mode: s.mode, base: s.base })),
+    plannedRounds: st.runs,
+    maxRounds: st.maxRuns,
+    minRounds: st.minRounds,
+    ...(st.resolution !== undefined ? { resolution: { relative: st.resolution, floorMs: st.resolutionMs } } : {}),
+    gates,
+    accounting: bundle.host.accounting,
+    ...(bundle.host.counters ? { counters: bundle.host.counters } : {}),
+  });
+}
+
 // Recomputes summary.json from samples.jsonl.
 export function summarizeBenchBundle(dir: string, bundle: BenchBundle, gates: Gates = bundle.settings.gates): BenchSummary {
   const records = readFileSync(join(dir, "samples.jsonl"), "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as SampleRecord | RoundRecord);
-  const summary = summarizeBench({
-    records,
-    sides: bundle.sides.map((s) => ({ label: s.label, role: s.role })),
-    plannedRounds: bundle.settings.runs,
-    minRounds: bundle.settings.minRounds,
-    gates,
-    accounting: bundle.host.accounting,
-  });
+    .map((l) => JSON.parse(l) as SampleRecord | RoundRecord | CounterRecord);
+  const summary = summarize(bundle, records, gates);
   writeJsonAtomic(join(dir, "summary.json"), summary);
   return summary;
 }
