@@ -8,7 +8,7 @@
 // bench (the machine's speed changed). Rejected rounds stay in the bundle but never enter a statistic.
 
 import type { CpuWindow, IdleWait } from "../host/machine.ts";
-import { bootstrapMedian, callOf, median, type Call, type Interval } from "./stats.ts";
+import { medianInterval, callOf, median, type Call, type Interval } from "./stats.ts";
 
 export interface SampleRecord {
   type: "sample";
@@ -178,8 +178,8 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       label,
       role,
       samples: mine.length,
-      wallMs: bootstrapMedian(mine.map((s) => s.wallMs)),
-      cpuMs: cpu.length === mine.length ? bootstrapMedian(cpu) : null,
+      wallMs: medianInterval(mine.map((s) => s.wallMs)),
+      cpuMs: cpu.length === mine.length ? medianInterval(cpu) : null,
       maxRssBytes: rss.length ? median(rss) : null,
       failures: all.filter(failed).length,
       exitCodes: [...new Set(all.map((s) => s.exit.code))],
@@ -193,9 +193,9 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
     .filter((s) => s.role === "cand")
     .map(({ label }) => {
       const pairs = accepted.map((ss) => ({ ref: ss.find((s) => s.side === ref.label)!, cand: ss.find((s) => s.side === label)! }));
-      const wallRatio = bootstrapMedian(pairs.map((p) => p.cand.wallMs / p.ref.wallMs));
+      const wallRatio = medianInterval(pairs.map((p) => p.cand.wallMs / p.ref.wallMs));
       const cpuPairs = pairs.filter((p) => p.ref.cpuMs && p.cand.cpuMs !== null);
-      const cpuRatio = cpuPairs.length === pairs.length ? bootstrapMedian(cpuPairs.map((p) => p.cand.cpuMs! / p.ref.cpuMs!)) : null;
+      const cpuRatio = cpuPairs.length === pairs.length ? medianInterval(cpuPairs.map((p) => p.cand.cpuMs! / p.ref.cpuMs!)) : null;
       const anyFailed = samples.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : pairs.length < input.minRounds ? "noisy" : "measured";
       return { label, state, wallRatio, cpuRatio, call: state === "measured" && wallRatio ? callOf(wallRatio) : null };

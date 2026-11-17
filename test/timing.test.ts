@@ -2,23 +2,40 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detectAccounting } from "../src/host/accounting.ts";
 import { cpuWindow, outsideCores, priorityNote, type CpuSnapshot, type HostLoad, type IdleWait } from "../src/host/machine.ts";
-import { bootstrapMedian, callOf, median, quantile } from "../src/timing/stats.ts";
+import { medianInterval, callOf, median, quantile } from "../src/timing/stats.ts";
 import { DEFAULT_GATES, judgeRound, summarizeBench, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
 
-test("quantiles interpolate; the bootstrap is deterministic and brackets the median", () => {
+test("quantiles interpolate; the median interval comes from order statistics", () => {
   assert.equal(median([3, 1, 2]), 2);
   assert.equal(median([1, 2, 3, 4]), 2.5);
   assert.equal(quantile([0, 10], 0.25), 2.5);
   const xs = [0.51, 0.49, 0.5, 0.55, 0.48, 0.5, 0.52];
-  const a = bootstrapMedian(xs)!;
-  assert.deepEqual(bootstrapMedian(xs), a);
+  const a = medianInterval(xs)!;
   assert.equal(a.estimate, 0.5);
-  assert.ok(a.low <= 0.5 && a.high >= 0.5 && a.high < 1);
+  // n = 7: only the whole range reaches 95% (it covers 1 - 2/128).
+  assert.deepEqual([a.low, a.high, a.n], [0.48, 0.55, 7]);
+  assert.ok(Math.abs(a.confidence - (1 - 2 / 128)) < 1e-12);
+  // n = 20: the 95% interval is the 6th to the 15th value (it covers 95.9%).
+  const b = medianInterval(Array.from({ length: 20 }, (_, i) => 20 - i))!;
+  assert.deepEqual([b.low, b.high], [6, 15]);
+  assert.ok(b.confidence >= 0.95 && b.confidence < 0.96);
   assert.equal(callOf(a), "faster");
   assert.equal(callOf({ ...a, low: 0.9, high: 1.05 }), "indistinguishable");
   assert.equal(callOf({ ...a, estimate: 1.2, low: 1.1, high: 1.3 }), "slower");
   assert.equal(callOf({ ...a, estimate: 1.0005, low: 1.0001, high: 1.001 }), "indistinguishable", "too small to matter");
-  assert.equal(bootstrapMedian([]), null);
+  assert.equal(medianInterval([]), null);
+});
+
+test("calls need 5 rounds: fewer cannot rule out luck", () => {
+  // 3 of 3 rounds below 1 happens by chance 1 time in 4; 5 of 5, 1 in 16.
+  const three = medianInterval([0.97, 0.98, 0.99])!;
+  assert.equal(three.confidence, 0.75);
+  assert.equal(callOf(three), "too few rounds");
+  assert.equal(callOf(medianInterval([0.5])!), "too few rounds");
+  const five = medianInterval([0.97, 0.98, 0.99, 0.96, 0.98])!;
+  assert.equal(five.confidence, 0.9375);
+  assert.equal(callOf(five), "faster");
+  assert.equal(callOf(medianInterval([0.97, 0.98, 1.01, 0.96, 0.98])!), "indistinguishable", "one round on the other side");
 });
 
 test("outside load: machine CPU minus the harness and the measured commands", () => {
@@ -96,6 +113,8 @@ test("paired ratios: load that slows a whole round cancels", () => {
     { ref: 100, cand: 50, canary: 20 },
     { ref: 102, cand: 51, canary: 20 },
     { ref: 200, cand: 100, canary: 21 },
+    { ref: 104, cand: 52, canary: 20 },
+    { ref: 98, cand: 49, canary: 20 },
   ]);
   const c = s.candidates[0]!;
   assert.equal(c.state, "measured");
