@@ -82,6 +82,26 @@ export function renderBenchSummary(s: BenchSummary): string {
       s.candidates.map((c, i) => [c.label, c.ref ?? "ref", c.state, vsRef.cells[i]!, c.cpuRatio ? ratio(c.cpuRatio.estimate) : "-", callText(c.call, c.sameWithin)]),
     ),
   );
+  if (s.counters?.sides.length) {
+    const big = (v: number): string => (v >= 1e9 ? `${(v / 1e9).toFixed(3)}G` : v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : `${Math.round(v)}`);
+    const fig = (f: { median: number; spread: number } | null, fmt: (v: number) => string): string => (f ? `${fmt(f.median)} ±${(f.spread * 50).toFixed(f.spread < 0.002 ? 3 : 1)}%` : "-");
+    out.push("");
+    out.push(`counters (${s.counters.backend}; separate untimed runs; median ±half the range): compare a side with itself, not with another implementation`);
+    out.push(
+      table(
+        ["side", "runs", "instructions", "cycles", "IPC", "task clock", "page faults"],
+        s.counters.sides.map((c) => [
+          c.label,
+          String(c.runs),
+          fig(c.instructions, big),
+          fig(c.cycles, big),
+          c.ipc === null ? "-" : c.ipc.toFixed(2),
+          fig(c.taskClockMs, ms),
+          fig(c.pageFaults, big),
+        ]),
+      ),
+    );
+  }
   if (s.speedups?.length) {
     const sp = intervalColumn("single-threaded / default wall", s.speedups.map((x) => x.ratio), ratio);
     out.push("");

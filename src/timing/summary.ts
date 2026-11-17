@@ -8,6 +8,7 @@
 // bench (the machine's speed changed). Rejected rounds stay in the bundle but never enter a statistic.
 
 import type { CpuWindow, IdleWait } from "../host/machine.ts";
+import type { Counters } from "../host/counters.ts";
 import type { ThreadMode } from "../profile/profile.ts";
 import { callOf, DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS, lookConfidence, median, medianInterval, sameWithin, SETTLED, type Call, type Interval, type LookPlan } from "./stats.ts";
 
@@ -50,6 +51,35 @@ export interface RoundRecord {
   outsideCores: number | null;
   // Reasons seen while running (retry decisions used the fastest canary so far).
   rejected: string[];
+}
+
+// One run under the counter backend (host/counters.ts), after the timed rounds: never timed, so its
+// overhead cannot touch a wall time.
+export interface CounterRecord {
+  type: "counters";
+  side: string;
+  run: number;
+  exit: { code: number | null; signal: string | null };
+  timedOut: boolean;
+  counters: Counters | null;
+}
+
+// A counter over a side's counted runs: the median, and the spread (max - min) / median, which says how
+// deterministic the figure is for this implementation and mode.
+export interface CounterFigure {
+  median: number;
+  spread: number;
+}
+
+export interface CounterSummary {
+  label: string;
+  runs: number;
+  instructions: CounterFigure | null;
+  cycles: CounterFigure | null;
+  // Instructions per cycle (medians).
+  ipc: number | null;
+  taskClockMs: CounterFigure | null;
+  pageFaults: CounterFigure | null;
 }
 
 // null (or Infinity, which JSON stores as null) turns a gate off.
@@ -123,6 +153,8 @@ export interface BenchSummary {
   speedups: { base: string; ratio: Interval | null }[];
   // Every comparison has a call more rounds would not change (or failed): a sequential bench stops.
   settled: boolean;
+  // Counted runs per side, where a counter backend worked (absent in older summaries).
+  counters?: { backend: string; sides: CounterSummary[] } | null;
   clean: boolean;
 }
 
@@ -166,7 +198,7 @@ export function modePairs(sides: SideInfo[]): { base: string; multi: string; sin
 }
 
 export interface SummarizeInput {
-  records: (SampleRecord | RoundRecord)[];
+  records: (SampleRecord | RoundRecord | CounterRecord)[];
   sides: SideInfo[];
   plannedRounds: number;
   // Absent: a fixed number of rounds (plannedRounds).
@@ -175,6 +207,32 @@ export interface SummarizeInput {
   resolution?: Resolution;
   gates: Gates;
   accounting: string;
+  // The counter backend the bench used ("none": no counted runs).
+  counters?: string;
+}
+
+const figure = (xs: number[]): CounterFigure | null => {
+  if (!xs.length) return null;
+  const m = median(xs);
+  return { median: m, spread: m > 0 ? (Math.max(...xs) - Math.min(...xs)) / m : 0 };
+};
+
+export function summarizeCounters(records: CounterRecord[], labels: string[]): CounterSummary[] {
+  return labels.map((label) => {
+    const runs = records.filter((r) => r.side === label && r.counters && !r.timedOut && r.exit.signal === null).map((r) => r.counters!);
+    const pick = (k: keyof Counters): number[] => runs.map((c) => c[k]).filter((x): x is number => x !== null);
+    const instructions = figure(pick("instructions"));
+    const cycles = figure(pick("cycles"));
+    return {
+      label,
+      runs: runs.length,
+      instructions,
+      cycles,
+      ipc: instructions && cycles && cycles.median > 0 ? instructions.median / cycles.median : null,
+      taskClockMs: figure(pick("taskClockMs")),
+      pageFaults: figure(pick("pageFaults")),
+    };
+  });
 }
 
 export interface AcceptedRounds<T> {
@@ -290,6 +348,16 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
     candidates,
     speedups,
     settled: candidates.every((c) => c.state === "failed" || (c.call !== null && SETTLED.includes(c.call))),
+    counters:
+      input.counters && input.counters !== "none"
+        ? {
+            backend: input.counters,
+            sides: summarizeCounters(
+              input.records.filter((r): r is CounterRecord => r.type === "counters"),
+              input.sides.map((x) => x.label),
+            ),
+          }
+        : null,
     clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable),
   };
 }

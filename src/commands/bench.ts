@@ -33,7 +33,8 @@ import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
 import { runRounds, settledAtLook } from "../timing/rounds.ts";
 import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
 import { runCommand } from "../timing/runCommand.ts";
-import { DEFAULT_GATES, summarizeBench, type BenchSummary, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
+import { DEFAULT_GATES, summarizeBench, type BenchSummary, type CounterRecord, type Gates, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
+import { counterBackend, countCommand, type CounterBackend } from "../host/counters.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
 
 export interface BenchSettings {
@@ -48,6 +49,8 @@ export interface BenchSettings {
   // "same" means within this fraction of the reference, or within resolutionMs where that is larger.
   resolution: number;
   resolutionMs: number;
+  // Counted runs per side after the timed rounds, where a counter backend works (host/counters.ts).
+  counterRuns: number;
   warmup: number;
   attempts: number;
   timeoutMs: number;
@@ -62,7 +65,7 @@ export interface BenchBundle {
   createdAt: string;
   finishedAt: string | null;
   harness: ReturnType<typeof harnessInfo>;
-  host: HostInfo & { load: HostLoad; accounting: string };
+  host: HostInfo & { load: HostLoad; accounting: string; counters?: CounterBackend };
   corpus: CorpusInfo;
   settings: BenchSettings;
   canary: { version: string; size: number };
@@ -104,6 +107,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     minRounds: opts.minRounds ?? 3,
     resolution: opts.resolution ?? DEFAULT_RESOLUTION,
     resolutionMs: opts.resolutionMs ?? DEFAULT_RESOLUTION_MS,
+    counterRuns: opts.counterRuns ?? 3,
     warmup: opts.warmup ?? 1,
     attempts: opts.attempts ?? 3,
     timeoutMs: opts.timeoutMs ?? 600_000,
@@ -131,7 +135,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     createdAt: new Date().toISOString(),
     finishedAt: null,
     harness: harnessInfo(),
-    host: { ...hostInfo(), load: hostLoad(), accounting },
+    host: { ...hostInfo(), load: hostLoad(), accounting, counters: settings.counterRuns > 0 ? counterBackend() : "none" },
     corpus: corpusInfo(root),
     settings,
     canary: { version: CANARY_VERSION, size: CANARY_SIZE },
@@ -197,6 +201,17 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
       return { cpuMs: s.cpuMs, failed: s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0, brief: fmtMs(s.wallMs) };
     },
   });
+  if (bundle.host.counters === "perf") {
+    opts.log(`counting: ${settings.counterRuns} runs per side under perf stat`);
+    for (let run = 1; run <= settings.counterRuns; run++) {
+      const order = run % 2 ? sides : [...sides].reverse();
+      for (const side of order) {
+        const c = await countCommand({ command: commands.get(side.label)!, cwd: root, env: side.env.env, timeoutMs: settings.timeoutMs });
+        const rec: CounterRecord = { type: "counters", side: side.label, run, ...c };
+        await writer.write(rec);
+      }
+    }
+  }
   await writer.close();
 
   const after = corpusState(root);
@@ -217,7 +232,7 @@ export function readBenchBundle(dir: string): BenchBundle {
   return b;
 }
 
-type Records = (SampleRecord | RoundRecord)[];
+type Records = (SampleRecord | RoundRecord | CounterRecord)[];
 
 function summarize(bundle: BenchBundle, records: Records, gates: Gates = bundle.settings.gates): BenchSummary {
   const st = bundle.settings;
@@ -230,6 +245,7 @@ function summarize(bundle: BenchBundle, records: Records, gates: Gates = bundle.
     ...(st.resolution !== undefined ? { resolution: { relative: st.resolution, floorMs: st.resolutionMs } } : {}),
     gates,
     accounting: bundle.host.accounting,
+    ...(bundle.host.counters ? { counters: bundle.host.counters } : {}),
   });
 }
 
@@ -238,7 +254,7 @@ export function summarizeBenchBundle(dir: string, bundle: BenchBundle, gates: Ga
   const records = readFileSync(join(dir, "samples.jsonl"), "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as SampleRecord | RoundRecord);
+    .map((l) => JSON.parse(l) as SampleRecord | RoundRecord | CounterRecord);
   const summary = summarize(bundle, records, gates);
   writeJsonAtomic(join(dir, "summary.json"), summary);
   return summary;

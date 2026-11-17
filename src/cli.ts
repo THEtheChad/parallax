@@ -26,6 +26,7 @@ const USAGE = `usage:
   parallax bench --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
                  [--config tsconfig.json] [--threads both|default|single] [--runs 6] [--max-runs 15] [--min-runs 3]
                  [--resolution 0.05] [--resolution-ms 1] [--warmup 1] [--attempts 3] [--timeout-ms 600000]
+                 [--counter-runs 3]
                  [--max-busy-cores 1.5] [--idle-timeout-s 300] [--boot-settle-s 300]
                  [--max-outside-cores 1] [--max-canary-drift 0.1]
                                          time each side's check command in alternating rounds; candidates are
@@ -187,6 +188,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         ref: { type: "string" },
         cand: { type: "string", multiple: true },
         config: { type: "string" },
+        "counter-runs": { type: "string" },
         "timeout-ms": { type: "string" },
         ...ROUND_OPTIONS,
       },
@@ -197,7 +199,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
       out: o.out,
       ref: o.ref,
       cands: o.cand,
-      ...defined({ config: o.config, timeoutMs: num(o, "timeout-ms") }),
+      ...defined({ config: o.config, timeoutMs: num(o, "timeout-ms"), counterRuns: num(o, "counter-runs") }),
       ...roundOptions(o),
       log,
     });

@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { KeepingJsonlWriter } from "../src/bundle/lines.ts";
 import { runRounds } from "../src/timing/rounds.ts";
 import { callOf, lookConfidence, lookPoints, median, medianInterval, quantile, sameWithin } from "../src/timing/stats.ts";
-import { DEFAULT_GATES, judgeRound, summarizeBench, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
+import { parsePerfStat } from "../src/host/counters.ts";
+import { DEFAULT_GATES, judgeRound, summarizeBench, summarizeCounters, type CounterRecord, type RoundRecord, type SampleRecord } from "../src/timing/summary.ts";
 
 test("quantiles interpolate; the median interval comes from order statistics", () => {
   assert.equal(median([3, 1, 2]), 2);
@@ -279,4 +280,22 @@ test("thread modes: each candidate is compared with the reference in its own mod
   assert.ok(Math.abs(speedup.ref! - 4) < 1e-9 && Math.abs(speedup.cand! - 2) < 1e-9);
   assert.equal(s.sides.find((x) => x.label === "ref@1t")!.outputMatchesRef, true, "a single-threaded run must give the reference's output too");
   assert.equal(s.clean, true);
+});
+
+test("counters: perf stat's CSV, and a side's median and spread over its counted runs", () => {
+  const c = parsePerfStat(
+    "1472034511,,instructions:u,426819,100.00,2.55,insn per cycle\n578101234,,cycles:u,426819,100.00,0.890,GHz\n144.70,msec,task-clock:u,426819,100.00,0.98,CPUs utilized\n3,,context-switches:u,1,100.00,,\n<not counted>,,cpu-migrations:u,0,0.00,,\n9876,,page-faults:u,1,100.00,,\n",
+  )!;
+  assert.deepEqual(c, { instructions: 1472034511, cycles: 578101234, taskClockMs: 144.7, pageFaults: 9876 });
+  assert.equal(parsePerfStat("<not supported>,,instructions:u,0,0.00,,\n")!.instructions, null);
+  assert.equal(parsePerfStat(""), null);
+  const run = (n: number, instructions: number): CounterRecord => ({
+    type: "counters", side: "a", run: n, exit: { code: 0, signal: null }, timedOut: false,
+    counters: { instructions, cycles: instructions / 2, taskClockMs: 100, pageFaults: 10 },
+  });
+  const [a] = summarizeCounters([run(1, 1000), run(2, 1010), run(3, 990)], ["a"]);
+  assert.equal(a!.runs, 3);
+  assert.equal(a!.instructions!.median, 1000);
+  assert.ok(Math.abs(a!.instructions!.spread - 0.02) < 1e-12);
+  assert.equal(a!.ipc, 2);
 });
