@@ -41,6 +41,7 @@ export interface LspBenchSettings {
   edits: number;
   intervalMs: number;
   lines: number;
+  serviceLines: number;
   runs: number;
   minRounds: number;
   warmup: number;
@@ -94,6 +95,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     edits: opts.edits ?? 20,
     intervalMs: opts.intervalMs ?? 120,
     lines: opts.lines ?? 4,
+    serviceLines: opts.serviceLines ?? 1,
     runs: opts.runs ?? 5,
     minRounds: opts.minRounds ?? 3,
     warmup: opts.warmup ?? 1,
@@ -112,7 +114,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
 
   const files = pickFiles(root, settings.files, opts.file);
   if (!files.length) throw new Error(`no TypeScript files found in ${root}`);
-  const spec: LspTimingSpec = { root, files, edits: settings.edits, intervalMs: settings.intervalMs, lines: settings.lines, requestTimeoutMs: settings.requestTimeoutMs };
+  const spec: LspTimingSpec = { root, files, edits: settings.edits, intervalMs: settings.intervalMs, lines: settings.lines, serviceLines: settings.serviceLines, requestTimeoutMs: settings.requestTimeoutMs };
   const dir = prepareBundleDir(opts.out);
   const usage = usageBackend();
   const bundle: LspBenchBundle = {

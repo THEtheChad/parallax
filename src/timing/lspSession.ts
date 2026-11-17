@@ -12,6 +12,13 @@
 //           Latency is from the moment the key was due to the answer, so a server that falls behind is
 //           charged for the queue it built. A new request in the same slot cancels the one in flight,
 //           as an editor does; cancelled requests are counted, not timed. Server CPU per key.
+//   service closed loop: `serviceLines` more lines typed the same way, but each key's requests are
+//           sent one at a time, in the order the editor sends them, each after the previous answer,
+//           and the next key only after the last. No queue and no cancellation: what is left is the
+//           server's own time per request, which varies far less from run to run than latency
+//           under load. The first request after a key carries the server's update, as in the edit
+//           phase. Time per key (all of its requests answered), per completion and per diagnostics
+//           request; server CPU per key.
 //
 // What a key sends while typing (the fork's lspdiff bench, after VS Code): didChange; a completion
 // after "." and at the start of a word; the edited file's diagnostics; every DEBOUNCE_MS of typing,
@@ -31,7 +38,7 @@ import { endPosition, languageId, pickPositions, readText, type Position } from 
 import { TYPED } from "../session/script.ts";
 import { median, quantile } from "./stats.ts";
 
-export const LSP_SESSION_ID = "parallax.lsp-timing/1";
+export const LSP_SESSION_ID = "parallax.lsp-timing/2";
 export const DEBOUNCE_MS = 500;
 export const HOVER_EVERY = 8;
 const REQUEST_CANCELLED = -32800;
@@ -43,6 +50,8 @@ export interface LspTimingSpec {
   edits: number;
   intervalMs: number;
   lines: number;
+  // Lines typed closed loop (the service phase); 0 skips it.
+  serviceLines: number;
   requestTimeoutMs: number;
 }
 
@@ -64,6 +73,10 @@ export interface SessionMetrics {
   "typing.semanticTokensP50Ms": number | null;
   "typing.inlayHintP50Ms": number | null;
   "typing.cpuPerKeyMs": number | null;
+  "service.keyP50Ms": number | null;
+  "service.completionP50Ms": number | null;
+  "service.diagnosticP50Ms": number | null;
+  "service.cpuPerKeyMs": number | null;
   "session.memoryBytes": number | null;
 }
 
@@ -94,7 +107,7 @@ export interface SessionResult {
   stderrFile: string;
 }
 
-type Phase = "open" | "warmup" | "edit" | "typing";
+type Phase = "open" | "warmup" | "edit" | "typing" | "service";
 
 interface Doc {
   uri: string;
@@ -123,6 +136,10 @@ function emptyMetrics(): SessionMetrics {
     "typing.semanticTokensP50Ms": null,
     "typing.inlayHintP50Ms": null,
     "typing.cpuPerKeyMs": null,
+    "service.keyP50Ms": null,
+    "service.completionP50Ms": null,
+    "service.diagnosticP50Ms": null,
+    "service.cpuPerKeyMs": null,
     "session.memoryBytes": null,
   };
 }
@@ -212,6 +229,25 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
   const diagnostics = (d: Doc) => ["textDocument/diagnostic", { textDocument: { uri: d.uri } }] as const;
   const hoverAt = pickPositions(other.text, 3).idents[1] ?? pickPositions(other.text, 3).idents[0] ?? { line: 0, character: 0 };
   const hover = ["textDocument/hover", { textDocument: { uri: other.uri }, position: hoverAt }] as const;
+  const debounceKeys = Math.max(1, Math.round(DEBOUNCE_MS / spec.intervalMs));
+  // What the editor sends after typing TYPED[i] (key: keys typed so far in the phase), as
+  // [slot, kind, method, params]: a request replaces the one in flight in the same slot.
+  const keyRequests = (i: number, key: number, position: Position): [slot: string, kind: string, method: string, params: unknown][] => {
+    const td = { uri: edited.uri };
+    const ch = TYPED[i]!;
+    const sends: [string, string, string, unknown][] = [];
+    if (ch === ".") sends.push(["completion", "completion", "textDocument/completion", { textDocument: td, position, context: { triggerKind: 2, triggerCharacter: "." } }]);
+    else if (/[A-Za-z_$]/.test(ch) && !isIdent(TYPED[i - 1]) && TYPED[i - 1] !== ".")
+      sends.push(["completion", "completion", "textDocument/completion", { textDocument: td, position, context: { triggerKind: 1 } }]);
+    if (key % HOVER_EVERY === 0) sends.push(["hover", "hover", ...hover]);
+    sends.push([edited.uri, "diagnostic", ...diagnostics(edited)]);
+    if (key % debounceKeys === 0) {
+      for (const d of docs.slice(1)) sends.push([d.uri, "diagnostic", ...diagnostics(d)]);
+      sends.push(["semanticTokens", "semanticTokens", "textDocument/semanticTokens/full", { textDocument: td }]);
+      sends.push(["inlayHint", "inlayHint", "textDocument/inlayHint", { textDocument: td, range: { start: { line: 0, character: 0 }, end: endPosition(edited.text) } }]);
+    }
+    return sends;
+  };
 
   let outcome: Outcome = "clean";
   let error: string | undefined;
@@ -254,14 +290,12 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
 
     // typing
     if (spec.lines > 0) {
-      const td = { uri: edited.uri };
       const latencies = new Map<string, number[]>();
       const lags: number[] = [];
       const inFlight = new Map<string, number>(); // slot -> request id
       const answers: Promise<unknown>[] = [];
       // The first failure (the server exited, a request timed out); the loop stops at the next key.
       let failure: Error | undefined;
-      const debounceKeys = Math.max(1, Math.round(DEBOUNCE_MS / spec.intervalMs));
       const before = usage();
       let key = 0;
       for (let line = 0; line < spec.lines; line++) {
@@ -272,20 +306,8 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
           while (performance.now() < due) await sleep(due - performance.now());
           if (failure) throw failure;
           lags.push(performance.now() - due);
-          const ch = TYPED[i]!;
-          const position = append(edited, ch);
-          const sends: [slot: string, kind: string, method: string, params: unknown][] = [];
-          if (ch === ".") sends.push(["completion", "completion", "textDocument/completion", { textDocument: td, position, context: { triggerKind: 2, triggerCharacter: "." } }]);
-          else if (/[A-Za-z_$]/.test(ch) && !isIdent(TYPED[i - 1]) && TYPED[i - 1] !== ".")
-            sends.push(["completion", "completion", "textDocument/completion", { textDocument: td, position, context: { triggerKind: 1 } }]);
-          if (key % HOVER_EVERY === 0) sends.push(["hover", "hover", ...hover]);
-          sends.push([edited.uri, "diagnostic", ...diagnostics(edited)]);
-          if (key % debounceKeys === 0) {
-            for (const d of docs.slice(1)) sends.push([d.uri, "diagnostic", ...diagnostics(d)]);
-            sends.push(["semanticTokens", "semanticTokens", "textDocument/semanticTokens/full", { textDocument: td }]);
-            sends.push(["inlayHint", "inlayHint", "textDocument/inlayHint", { textDocument: td, range: { start: { line: 0, character: 0 }, end: endPosition(edited.text) } }]);
-          }
-          for (const [slot, kind, method, params] of sends) {
+          const position = append(edited, TYPED[i]!);
+          for (const [slot, kind, method, params] of keyRequests(i, key, position)) {
             const previous = inFlight.get(slot);
             if (previous !== undefined) client.cancel(previous);
             const r = ask("typing", kind, method, params, due, key);
@@ -319,6 +341,31 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
       metrics["typing.hoverP50Ms"] = p("hover", 0.5);
       metrics["typing.semanticTokensP50Ms"] = p("semanticTokens", 0.5);
       metrics["typing.inlayHintP50Ms"] = p("inlayHint", 0.5);
+    }
+
+    // service
+    if (spec.serviceLines > 0) {
+      const perKey: number[] = [];
+      const byKind = new Map<string, number[]>();
+      const before = usage();
+      let key = 0;
+      for (let line = 0; line < spec.serviceLines; line++) {
+        for (let i = 0; i < TYPED.length; i++, key++) {
+          const start = performance.now();
+          const position = append(edited, TYPED[i]!);
+          for (const [, kind, method, params] of keyRequests(i, key, position)) {
+            const x = await ask("service", kind, method, params, undefined, key).answer;
+            if (x.cancelled || x.error) continue;
+            byKind.set(kind, [...(byKind.get(kind) ?? []), x.latencyMs]);
+          }
+          perKey.push(performance.now() - start);
+        }
+        removeTail(edited, TYPED.length);
+      }
+      metrics["service.cpuPerKeyMs"] = cpuDelta(before, usage(), key);
+      metrics["service.keyP50Ms"] = orNull(perKey, median);
+      metrics["service.completionP50Ms"] = orNull(byKind.get("completion") ?? [], median);
+      metrics["service.diagnosticP50Ms"] = orNull(byKind.get("diagnostic") ?? [], median);
     }
     endUsage = usage();
     metrics["session.memoryBytes"] = endUsage?.memoryBytes ?? null;

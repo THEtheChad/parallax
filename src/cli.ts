@@ -30,7 +30,7 @@ const USAGE = `usage:
                                          time each side's check command in alternating rounds; candidates are
                                          compared by their per-round ratio to the reference
   parallax lsp-bench --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
-                     [--files 6] [--file <rel>]... [--edits 20] [--interval-ms 120] [--lines 4] [--request-timeout-ms 120000]
+                     [--files 6] [--file <rel>]... [--edits 20] [--interval-ms 120] [--lines 4] [--service-lines 1] [--request-timeout-ms 120000]
                      [--threads both|default|single] [--runs 5] [--min-runs 3] [--warmup 1] [--attempts 3] [idle and gate options as for bench]
                                          time each side's language server through one editor session per round:
                                          open (time to first diagnostics), edit (first request after an edit, CPU
@@ -204,6 +204,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         edits: { type: "string" },
         "interval-ms": { type: "string" },
         lines: { type: "string" },
+        "service-lines": { type: "string" },
         "request-timeout-ms": { type: "string" },
         ...ROUND_OPTIONS,
       },
@@ -220,6 +221,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         edits: num(o, "edits"),
         intervalMs: num(o, "interval-ms"),
         lines: num(o, "lines"),
+        serviceLines: num(o, "service-lines"),
         requestTimeoutMs: num(o, "request-timeout-ms"),
       }),
       ...roundOptions(o),

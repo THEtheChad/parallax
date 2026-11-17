@@ -52,6 +52,10 @@ export const METRICS: MetricInfo[] = [
   { key: "typing.semanticTokensP50Ms", label: "typing: semantic tokens p50", unit: "ms" },
   { key: "typing.inlayHintP50Ms", label: "typing: inlay hints p50", unit: "ms" },
   { key: "typing.cpuPerKeyMs", label: "typing: CPU per key", unit: "ms" },
+  { key: "service.keyP50Ms", label: "service: per key p50", unit: "ms" },
+  { key: "service.completionP50Ms", label: "service: completion p50", unit: "ms" },
+  { key: "service.diagnosticP50Ms", label: "service: diagnostics p50", unit: "ms" },
+  { key: "service.cpuPerKeyMs", label: "service: CPU per key", unit: "ms" },
   { key: "session.memoryBytes", label: "session: memory", unit: "bytes" },
 ];
 
