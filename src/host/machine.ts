@@ -103,10 +103,13 @@ export function hostLoad(): HostLoad {
 
 // A note for a bundle when the harness runs below normal priority: any other program that wants the
 // CPU then wins over the measured commands, and its load shows up in their times.
-export function priorityNote(load: HostLoad): string | null {
-  return load.priority !== null && load.priority > 0
-    ? `the harness ran at lowered priority (nice ${load.priority}): other programs that want the CPU are served before the measured commands`
-    : null;
+// Windows has priority classes, not nice values; Node maps them to 19 (idle), 10 (below normal), 0, ...
+const WINDOWS_CLASS: Record<number, string> = { 19: "idle", 10: "below normal" };
+
+export function priorityNote(load: HostLoad, platform: NodeJS.Platform = process.platform): string | null {
+  if (load.priority === null || load.priority <= 0) return null;
+  const level = platform === "win32" ? `${WINDOWS_CLASS[load.priority] ?? `level ${load.priority}`} priority class` : `nice ${load.priority}`;
+  return `the harness ran at lowered priority (${level}): other programs that want the CPU are served before the measured commands`;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
