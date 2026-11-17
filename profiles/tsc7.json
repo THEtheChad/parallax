@@ -1,0 +1,14 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "tsc7",
+  "description": "TypeScript 7 (Go, microsoft/typescript-go): the reference.",
+  "lsp": { "command": ["{bin}", "--lsp", "--stdio"] },
+  "check": { "command": ["{bin}", "-p", "{config}", "--noEmit"] },
+  "version": { "command": ["{bin}", "--version"] },
+  "env": { "clear": ["TSGO_*", "GOMAXPROCS", "GOGC", "GOMEMLIMIT", "GODEBUG"] },
+  "processModel": "single",
+  "libraryFiles": { "uriPrefix": "bundled:///libs/" },
+  "crash": { "exitCodes": [2], "stderr": ["^panic: ", "^fatal error: ", "^goroutine \\d+ \\["] },
+  "shutdown": { "exitCodes": [1] },
+  "knownGaps": []
+}

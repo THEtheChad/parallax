@@ -1,0 +1,14 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "tsrs",
+  "description": "tsrs (oxc-project/tsrs): a Rust port of tsc 7. TSRS_FAST=1 switches it into a mode that changes output, so every TSRS_* variable is cleared.",
+  "lsp": { "command": ["{bin}", "--lsp", "--stdio"] },
+  "check": { "command": ["{bin}", "-p", "{config}", "--noEmit"] },
+  "version": { "command": ["{bin}", "--version"] },
+  "env": { "clear": ["TSRS_*", "TSGO_*", "GOMAXPROCS"] },
+  "processModel": "single",
+  "libraryFiles": { "dir": "{binDir}" },
+  "crash": { "exitCodes": [5], "stderr": ["panicked at ", "^thread '.*' panicked"] },
+  "shutdown": { "exitCodes": [1] },
+  "knownGaps": ["automatic type acquisition"]
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "fake-huge",
+  "lsp": { "command": ["node", "{bin}"] },
+  "env": { "clear": ["FAKE_*"], "set": { "FAKE_HUGE": "120000" } },
+  "libraryFiles": { "uriPrefix": "bundled:///libs/" },
+  "crash": { "exitCodes": [70], "stderr": ["panicked at "] }
+}

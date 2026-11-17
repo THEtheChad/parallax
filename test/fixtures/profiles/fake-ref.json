@@ -1,0 +1,8 @@
+{
+  "schema": "parallax.profile/1",
+  "name": "fake-ref",
+  "lsp": { "command": ["node", "{bin}"] },
+  "env": { "clear": ["FAKE_*"], "set": {} },
+  "libraryFiles": { "uriPrefix": "bundled:///libs/" },
+  "crash": { "exitCodes": [70], "stderr": ["panicked at "] }
+}
