@@ -91,6 +91,8 @@ export interface HostInfo {
 
 export interface CorpusInfo {
   root: string;
+  // The `origin` remote, without credentials (absent in bundles from before it was recorded).
+  repository?: string | null;
   gitCommit: string | null;
   // `git status --porcelain` lines (first 200) and the hash of the whole output, before and after.
   gitStatus: string[] | null;
@@ -107,6 +109,20 @@ const git = (cwd: string, args: string[]): string | null => {
   }
 };
 
+// A remote URL fit to publish: no user name, password or token, and no local paths.
+export function publicRemote(url: string | null): string | null {
+  if (!url) return null;
+  const scp = /^[\w.-]+@([\w.-]+):(.+)$/.exec(url); // git@github.com:owner/repo.git
+  if (scp) return `https://${scp[1]}/${scp[2]}`;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:" && u.protocol !== "http:" && u.protocol !== "ssh:" && u.protocol !== "git:") return null;
+    return `https://${u.host}${u.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
 export function corpusState(root: string): { commit: string | null; status: string | null } {
   const commit = git(root, ["rev-parse", "HEAD"])?.trim() ?? null;
   const status = commit ? git(root, ["status", "--porcelain=v1", "--untracked-files=all"]) : null;
@@ -119,6 +135,7 @@ export function corpusInfo(root: string): CorpusInfo {
   const { commit, status } = corpusState(root);
   return {
     root,
+    repository: publicRemote(git(root, ["remote", "get-url", "origin"])?.trim() ?? null),
     gitCommit: commit,
     gitStatus: status === null ? null : status.split("\n").filter(Boolean).slice(0, 200),
     statusSha256Before: status === null ? null : sha256(status),
@@ -145,10 +162,19 @@ export function hostInfo(): HostInfo {
 
 const HARNESS_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
+// `git archive` writes the commit into this file (.gitattributes export-subst), so a copy of the harness
+// that is not a git checkout still knows which commit it is.
+const ARCHIVED_COMMIT = join(HARNESS_ROOT, "src/bundle/harness-commit.txt");
+
 export function harnessInfo(): Bundle["harness"] {
   const pkg = JSON.parse(readFileSync(join(HARNESS_ROOT, "package.json"), "utf8")) as { version: string };
-  const commit = git(HARNESS_ROOT, ["rev-parse", "HEAD"])?.trim() ?? null;
-  const dirty = commit ? (git(HARNESS_ROOT, ["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "" : null;
+  let commit = git(HARNESS_ROOT, ["rev-parse", "HEAD"])?.trim() ?? null;
+  let dirty = commit ? (git(HARNESS_ROOT, ["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "" : null;
+  if (!commit) {
+    const archived = /^[0-9a-f]{40}$/.exec(readFileSync(ARCHIVED_COMMIT, "utf8").trim())?.[0] ?? null;
+    // An archive cannot say whether its files were changed after it was made.
+    if (archived) [commit, dirty] = [archived, null];
+  }
   return { name: "parallax", version: pkg.version, gitCommit: commit, gitDirty: dirty, node: process.version };
 }
 

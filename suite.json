@@ -1,0 +1,28 @@
+{
+  "schema": "parallax.suite/1",
+  "description": "The projects everyone benches, each pinned to a commit and installed the same way, so results from different machines compare. Install scripts are skipped: they run third-party code, and type checking does not need them.",
+  "projects": [
+    {
+      "name": "hono",
+      "repository": "https://github.com/honojs/hono",
+      "commit": "06880c4a2b04de9dd74217f26dd831209b9c01f1",
+      "install": ["bun", "install", "--frozen-lockfile", "--ignore-scripts"],
+      "bench": { "config": "tsconfig.build.json" }
+    },
+    {
+      "name": "umami",
+      "repository": "https://github.com/umami-software/umami",
+      "commit": "559e3c607c23d2c72d9bd4f6481bda428255323c",
+      "install": ["corepack", "pnpm@12.3.4", "install", "--frozen-lockfile", "--ignore-scripts"],
+      "bench": { "config": "tsconfig.json" },
+      "lspBench": {}
+    },
+    {
+      "name": "t3code",
+      "repository": "https://github.com/pingdotgg/t3code",
+      "commit": "cd41c4ada0c70cc2eec95ecd7266f3dab010c58c",
+      "install": ["corepack", "pnpm", "install", "--frozen-lockfile", "--ignore-scripts"],
+      "lspBench": { "file": ["apps/web/src/components/ChatView.tsx", "apps/server/src/orchestration-v2/Orchestrator.ts"] }
+    }
+  ]
+}

@@ -115,6 +115,31 @@ loop: one request at a time, the server's own time per request). The files are p
 `lsp-diff` (`--files 6`, or `--file <rel>` repeated; the first is edited). Every request of every
 session is kept in `runs/<side>.<round>.<attempt>.jsonl`.
 
+## The suite and published results
+
+`suite.json` pins the projects everyone benches, each to a commit, with its install command
+(install scripts skipped), so results from different machines measure the same thing.
+
+```sh
+pnpm parallax suite list
+pnpm parallax suite fetch                # clone and install every project into the suite cache
+pnpm parallax suite run --ref tsc7=<tsc7-binary> --cand tsrs=<tsrs-binary> \
+  --out <bundles-dir> --publish <results-dir>
+```
+
+Fetching needs git, and each project's own package manager: bun for hono, pnpm through corepack for
+the others. The cache is `PARALLAX_SUITE_DIR`, else the OS's cache directory.
+
+`parallax publish <bundle-dir> --out <results-dir>` writes a bundle as one result file to publish:
+the per-round records, the summary, and provenance (harness commit, each binary's sha256 and version,
+the project's repository and commit, the machine's OS, CPU, power state and priority). It leaves out
+the hostname (a random machine id, kept in the config directory, groups one machine's results), all
+absolute paths, the commands' outputs and the per-request logs. A harness with uncommitted changes
+cannot be verified, so publishing from one needs `--allow-dirty`.
+
+`parallax verify-result <file>...` checks that a result is unedited and that its summary is what its
+records give.
+
 ## Profiles
 
 `profiles/tsc7.json`, `profiles/tsrs.json`, `profiles/tsc-rs-fork.json`. A profile declares the

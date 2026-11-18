@@ -193,7 +193,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     sides,
     runs: settings.runs,
     maxRuns: settings.maxRuns,
-    stop: () => settledAtLook(summarize(bundle, writer.records as Records), settings, opts.log),
+    stop: () => settledAtLook(summarizeLspBenchRecords(bundle, writer.records as Records), settings, opts.log),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -227,9 +227,11 @@ export function readLspBenchBundle(dir: string): LspBenchBundle {
   return b;
 }
 
-type Records = (SessionRecord | RoundRecord)[];
+export type Records = (SessionRecord | RoundRecord)[];
 
-function summarize(bundle: LspBenchBundle, records: Records, gates: Gates = bundle.settings.gates): LspBenchSummary {
+// The summary of a bundle from its records (a pure function: `bench-summary` and published results
+// recompute it).
+export function summarizeLspBenchRecords(bundle: LspBenchBundle, records: Records, gates: Gates = bundle.settings.gates): LspBenchSummary {
   const st = bundle.settings;
   return summarizeLspBench({
     records,
@@ -249,7 +251,7 @@ export function summarizeLspBenchBundle(dir: string, bundle: LspBenchBundle, gat
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l) as SessionRecord | RoundRecord);
-  const summary = summarize(bundle, records, gates);
+  const summary = summarizeLspBenchRecords(bundle, records, gates);
   writeJsonAtomic(join(dir, "summary.json"), summary);
   return summary;
 }

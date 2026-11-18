@@ -9,7 +9,10 @@ import { bench, readBenchBundle, summarizeBenchBundle } from "./commands/bench.t
 import { importLspdiff } from "./commands/importLspdiff.ts";
 import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "./commands/lspBench.ts";
 import { lspDiff } from "./commands/lspDiff.ts";
+import { publish, verifyResult } from "./commands/publish.ts";
+import { suiteRun } from "./commands/suiteRun.ts";
 import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
+import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
 import { renderBenchSummary } from "./report/bench.ts";
 import { renderLspBenchSummary } from "./report/lspBench.ts";
@@ -41,6 +44,16 @@ const USAGE = `usage:
   parallax bench-summary <bundle-dir> [--max-outside-cores N] [--max-canary-drift F]
                                          recompute summary.json of a bench or lsp-bench bundle from samples.jsonl
                                          (optionally with other gates)
+  parallax publish <bundle-dir> --out <results-dir> [--allow-dirty]
+                                         write a bench or lsp-bench bundle as one result file fit to publish:
+                                         records, summary and provenance; no hostname, paths or outputs
+  parallax verify-result <result.json>...
+                                         check each result's id and that its summary is what its records give
+  parallax suite list
+  parallax suite fetch [<project>...]    fetch suite projects (suite.json) at their commits and install them
+  parallax suite run --ref <profile>=<bin> --cand ... --out <dir> [--only bench|lsp-bench]
+                     [--publish <results-dir>] [round, resolution, idle and gate options] [<project>...]
+                                         bench every suite project (or those named) with the suite's settings
   parallax import-lspdiff --from <old-out-dir> --project <dir> --ref <profile>=<bin> --cand <profile>=<bin> --out <bundle-dir>
 
 Profiles are names in profiles/ (tsc7, tsrs, tsc-rs-fork) or paths to profile JSON files.
@@ -55,6 +68,7 @@ async function main(argv: string[]): Promise<number> {
     return command ? 0 : 2;
   }
   if (command === "bench" || command === "lsp-bench" || command === "bench-summary") return benchCommand(command, rest);
+  if (command === "publish" || command === "verify-result" || command === "suite") return resultsCommand(command, rest);
   let summary: Summary;
   if (command === "lsp-diff") {
     const { values: o } = parseArgs({
@@ -177,6 +191,61 @@ function roundOptions(o: Values) {
 }
 
 const gateOptions = (o: Values) => defined({ maxOutsideCores: num(o, "max-outside-cores"), maxCanaryDrift: num(o, "max-canary-drift") });
+
+async function resultsCommand(command: string, rest: string[]): Promise<number> {
+  if (command === "publish") {
+    const { values: o, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { out: { type: "string" }, "allow-dirty": { type: "boolean" } } });
+    if (positionals.length !== 1 || !o.out) throw new UsageError("publish needs one bundle directory and --out");
+    const { file, result } = publish({ bundleDir: positionals[0]!, out: o.out, allowDirty: o["allow-dirty"] === true, log });
+    console.log(`${file}\n${result.kind} of ${result.project.name}, ${result.sides.length} sides, ${result.records.length} records`);
+    return 0;
+  }
+  if (command === "verify-result") {
+    const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
+    if (!positionals.length) throw new UsageError("verify-result needs result files");
+    let bad = 0;
+    for (const f of positionals) {
+      const v = verifyResult(f);
+      if (!v.ok) bad++;
+      console.log(`${v.ok ? "ok" : "FAILED"} ${f}${v.harnessDiffers ? " (made by another harness commit)" : ""}${v.problems.map((p) => `\n  ${p}`).join("")}`);
+    }
+    return bad ? 1 : 0;
+  }
+  // suite
+  const [sub, ...args] = rest;
+  if (sub === "list") {
+    for (const p of loadSuite().projects)
+      console.log(`${p.name.padEnd(10)} ${p.repository}@${p.commit.slice(0, 12)}  ${[p.bench ? `bench ${p.bench.config}` : "", p.lspBench ? "lsp-bench" : ""].filter(Boolean).join(", ")}`);
+    return 0;
+  }
+  if (sub === "fetch") {
+    const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
+    for (const p of selectProjects(loadSuite(), positionals)) console.log(`${p.name}: ${fetchProject(p, log)}`);
+    return 0;
+  }
+  if (sub === "run") {
+    const { values: o, positionals } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { out: { type: "string" }, ref: { type: "string" }, cand: { type: "string", multiple: true }, only: { type: "string" }, publish: { type: "string" }, ...ROUND_OPTIONS },
+    });
+    if (!o.out || !o.ref || !o.cand?.length) throw new UsageError("suite run needs --out, --ref and --cand");
+    if (o.only !== undefined && o.only !== "bench" && o.only !== "lsp-bench") throw new UsageError("--only wants bench or lsp-bench");
+    const outcomes = await suiteRun({
+      ref: o.ref,
+      cands: o.cand,
+      out: o.out,
+      projects: positionals,
+      ...(o.only ? { only: o.only as "bench" | "lsp-bench" } : {}),
+      ...(o.publish ? { publishTo: o.publish } : {}),
+      ...roundOptions(o),
+      log,
+    });
+    for (const x of outcomes) console.log(`${x.project} ${x.kind}: ${x.clean ? "measured" : "NOT MEASURED CLEANLY"} ${x.dir}${x.published ? ` -> ${x.published}` : ""}`);
+    return outcomes.every((x) => x.clean) ? 0 : 1;
+  }
+  throw new UsageError("suite wants list, fetch or run");
+}
 
 async function benchCommand(command: string, rest: string[]): Promise<number> {
   if (command === "bench") {
