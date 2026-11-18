@@ -28,8 +28,9 @@
 //   imports `imports` names exported by the other open files and not yet used in the edited file:
 //           the first letters typed (completion, which must search other files' exports), then the
 //           whole name (diagnostics report it missing) and the quick fix for it (the add-import fix)
-//   long    `longEdits` edits in a row, each followed by the edited file's diagnostics (a hover or a
-//           completion every few edits), resident memory read after each: diagnostics p50, how much
+//   long    `longEdits` edits in a row, a character added then removed, so the content stays the
+//           same; each followed by the edited file's diagnostics (a hover or a completion every few
+//           edits), resident memory read after each: diagnostics p50, how much
 //           slower the last quarter's diagnostics are than the first quarter's, and memory growth
 //           per edit (a Theil-Sen slope over the last three quarters, robust to a stray collection).
 //           Growth and drift are figures of one server, not compared by ratio (a ratio of two
@@ -495,8 +496,9 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
         cleared.push((await timed("errfix", "diagnostic", ...diagnostics(edited))).latencyMs);
       }
       counts.errfixMissed = missed;
-      metrics["errfix.errorDiagnosticsMs"] = median(shown);
-      metrics["errfix.fixDiagnosticsMs"] = median(cleared);
+      // A server that did not show the error answered something else: its times are not comparable.
+      metrics["errfix.errorDiagnosticsMs"] = missed === 0 ? median(shown) : null;
+      metrics["errfix.fixDiagnosticsMs"] = missed === 0 ? median(cleared) : null;
     }
 
     // imports
@@ -545,15 +547,18 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
     if (spec.longEdits > 0) {
       const lat: number[] = [];
       const memory: [number, number][] = [];
+      // A character added, then removed: every other edit checks the same content, so a slowdown or
+      // growth over the phase is the server's, not a file that grows.
       for (let i = 0; i < spec.longEdits; i++) {
-        const at = append(edited, i % 2 ? " " : "x");
+        if (i % 2) removeTail(edited, 1);
+        else append(edited, "x");
         if (i % 4 === 1) await timed("long", "hover", ...hover);
-        if (i % 4 === 3) await timed("long", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: at, context: { triggerKind: 1 } });
+        if (i % 4 === 2) await timed("long", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: endPosition(edited.text), context: { triggerKind: 1 } });
         lat.push((await timed("long", "diagnostic", ...diagnostics(edited))).latencyMs);
         const u = usage();
         if (u) memory.push([i, u.residentBytes]);
       }
-      removeTail(edited, spec.longEdits);
+      if (spec.longEdits % 2) removeTail(edited, 1);
       await timed("warmup", "diagnostic", ...diagnostics(edited));
       metrics["long.diagnosticP50Ms"] = median(lat);
       const q = Math.floor(lat.length / 4);

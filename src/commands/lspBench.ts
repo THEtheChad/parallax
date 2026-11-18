@@ -187,7 +187,9 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   };
   const calibration = checkCalibration(loadCalibration("lsp-bench"), hostKey(host, settings.pin?.cpus ?? null), {
     resolution: settings.resolution,
+    resolutionMs: settings.resolutionMs,
     runs: settings.runs,
+    maxRuns: settings.maxRuns,
     modes: settings.threads,
   });
   bundle.host.calibration = calibration.ref;

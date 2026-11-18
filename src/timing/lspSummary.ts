@@ -137,7 +137,8 @@ export interface LspSummarizeInput {
   memory: "peak" | "current" | null;
 }
 
-const failed = (s: SessionRecord): boolean => s.outcome !== "clean";
+export const sessionFailed = (s: SessionRecord): boolean => s.outcome !== "clean";
+const failed = sessionFailed;
 
 export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
   const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");

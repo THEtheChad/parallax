@@ -49,8 +49,13 @@ const PASS_WINDOWS = [
   "OS",
 ];
 
-// Set the same everywhere: a locale and a time zone change messages and dates in output.
-export const FIXED_ENV: Record<string, string> = { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TZ: "UTC" };
+// Set the same everywhere: a locale and a time zone change messages and dates in output. macOS has no
+// C.UTF-8 locale; en_US.UTF-8 is its UTF-8 locale that every install has.
+export const fixedEnv = (os: NodeJS.Platform = platform()): Record<string, string> => {
+  const locale = os === "darwin" ? "en_US.UTF-8" : "C.UTF-8";
+  return { LANG: locale, LC_ALL: locale, TZ: "UTC" };
+};
+export const FIXED_ENV = fixedEnv("linux");
 
 export const passList = (policy: EnvPolicy, os: NodeJS.Platform = platform()): string[] => [
   ...new Set([...(os === "win32" ? PASS_WINDOWS : PASS_POSIX), ...policy.pass]),
@@ -78,8 +83,9 @@ export function baseEnv(policy: EnvPolicy, from: NodeJS.ProcessEnv = process.env
     env[k] = v;
     passed.push(k);
   }
-  Object.assign(env, FIXED_ENV);
-  return { env, mode: "sealed", passed: passed.sort(), fixed: { ...FIXED_ENV } };
+  const fixed = fixedEnv(os);
+  Object.assign(env, fixed);
+  return { env, mode: "sealed", passed: passed.sort(), fixed };
 }
 
 export function parseEnvMode(value: string): EnvMode {

@@ -129,7 +129,8 @@ counted runs, language servers, and `lsp-diff`'s servers) starts from a sealed e
 - from the harness's environment, only what a program needs to start and find its files: `PATH`,
   `HOME`, `USER`, `LOGNAME`, `TMPDIR` (on Windows: `PATH`, `PATHEXT`, `SystemRoot`, `TEMP`,
   `USERPROFILE`, `APPDATA` and the other names Windows programs expect), and any `--pass-env NAME`;
-- fixed values: `LANG=C.UTF-8`, `LC_ALL=C.UTF-8`, `TZ=UTC`;
+- fixed values: `LANG` and `LC_ALL` set to `C.UTF-8` (`en_US.UTF-8` on macOS, which has no
+  `C.UTF-8`), and `TZ=UTC`;
 - then the profile's `env.set` and the thread mode's variables.
 
 Each side's record in the bundle lists the names passed (never their values: `PATH` and `HOME` are
@@ -153,21 +154,27 @@ pinning.
 same profile and binary under a second label (`<label>.aa`), in both thread modes, for a fixed
 `--runs` (9) rounds. Nothing differs, so anything the bench finds is noise:
 
-- **noise floor**, per metric and mode: the half-width of the A/A ratio interval, max(1 - low,
-  high - 1). At that many rounds, a difference smaller than this cannot be told from noise, so a
-  `--resolution` below it asks for "same" calls this machine cannot give. For instruction counts,
-  the two sides' difference or half either side's spread.
+- **noise floor**, per metric and mode: how wide a bench's ratio interval gets when nothing
+  differs. One A/A interval is a single draw of a random width, so the calibration keeps the
+  per-round A/A ratios and resamples them: the floor is the 90th percentile of the interval's
+  half-width, max(1 - low, high - 1), over resamples of as many ratios as a bench has rounds, at the
+  confidence its calls need. The report gives it at a default bench's first look (6 rounds, 95%);
+  each later bench recomputes it at its own first look. For instruction counts, the two sides'
+  difference or half either side's spread.
 - **smallest resolution**: the floor rounded up to the next half percent, at least 1%.
-- **false calls**: an A/A comparison called faster or slower. The machine (or the gates) let noise
-  through as a difference; no resolution fixes that.
+- **false calls**: A/A comparisons called faster or slower. Some are expected: each may make a false
+  call with probability up to one minus its interval's coverage, the budget calls are designed with,
+  and an `lsp-bench` calibration makes about 50 comparisons. The calibration flags the machine only
+  when there are more than chance explains (above the 95th percentile of that binomial).
 
 The result goes to `calibration.json` in the bundle and, when the A/A bench was measured cleanly, to
 the config directory (`~/.config/parallax/calibration/<kind>.json`, one per kind). Each later bench on
 the same host setup (OS, kernel, CPU model, core count, pinning) records the calibration it found
-and warns when its resolution is below a floor of a metric and mode it runs, or when the calibration
-made a false call. A bench that looks first at fewer rounds than the calibration has a higher floor
-still; the warning says so. Calibrate again after changing the machine's setup, and expect a floor to
-differ by workload: a 200 ms check on a quiet machine has a lower relative floor than a 20 ms one.
+and warns when, at its first look, a floor is wider than its "same" (the resolution, widened to
+`--resolution-ms` over the reference's time as its calls are), or when the calibration had more
+false calls than chance explains. Calibrate again after changing the machine's setup, and expect a
+floor to differ by workload: a 200 ms check on a quiet machine has a lower relative floor than a
+20 ms one.
 
 Theo Browne's tsc-rs tooling (`scripts/goport/perf.sh`) sets its pass bars the same way, from A/A
 runs on each host: 1% for single-threaded instructions, 5% for memory, 2% for wall time on a
@@ -234,19 +241,27 @@ cost model rather than time, so they are no basis for comparing implementations.
   auto-import data after 50 ms of quiet); the next key then waits on it, and its CPU shows per key.
   Typing at full speed never shows this.
 - **errfix:** `--errfixes` (5) times, a line with a type error added to the edited file and its
-  diagnostics (which must report one more problem; a server that does not is counted in the
-  summary), then the line removed and the diagnostics again: the time to show an error and to clear
-  it.
+  diagnostics (which must report one more problem), then the line removed and the diagnostics
+  again: the time to show an error and to clear it. A server that misses an inserted error is
+  counted in the summary and gets no errfix figures for that session.
 - **imports:** `--imports` (3) names exported by the other open files and not yet used in the
   edited one. The first three letters typed and a completion asked (it must search other files'
   exports), then the whole name typed: its "cannot find name" diagnostic and the quick fix for it
-  (the add-import fix). Names whose diagnostic was not found are counted.
-- **long:** `--long-edits` (60) edits in a row, each followed by the edited file's diagnostics (a
-  hover or a completion every few edits), with resident memory read after each. Reported per server:
+  (the add-import fix), timed until the fix's edit is in hand: through `codeAction/resolve` when the
+  server defers it. Names without a missing-name diagnostic or an add-import action are counted, and
+  the fix's figure is left out of a session that missed any.
+- **long:** `--long-edits` (60) edits in a row, a character added and then removed so the content
+  stays the same, each followed by the edited file's diagnostics (a hover or a completion every few
+  edits), with resident memory read after each. Reported per server:
   diagnostics p50, the last quarter's diagnostics over the first quarter's (a server that slows down
   as a session goes on), and memory growth per edit, a Theil-Sen slope over the last three quarters
   (robust to a stray garbage collection). Growth and drift are never compared by ratio: a ratio of
   two slopes near zero means nothing.
+
+Every compared metric must settle before a sequential `lsp-bench` stops, and each comparison has its
+own false-call budget, so the more metrics, the more often a bench runs to `--max-runs` and the more
+likely one false call somewhere among them. Read a single surprising call among many in that light;
+the phase options (0 skips a phase) narrow a bench to what it is for.
 
 The harness records how late it sent keys; when that is more than a quarter of the interval, the
 client machine was too busy and the bundle says so.

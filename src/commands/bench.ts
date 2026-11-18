@@ -168,7 +168,9 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   if (plan?.backend === "perf") bundle.host.counterPlan = plan;
   const calibration = checkCalibration(loadCalibration("cli-bench"), hostKey(host, settings.pin?.cpus ?? null), {
     resolution: settings.resolution,
+    resolutionMs: settings.resolutionMs,
     runs: settings.runs,
+    maxRuns: settings.maxRuns,
     modes: settings.threads,
     metrics: ["wallMs"],
   });
@@ -176,7 +178,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   if (accounting.startsWith("none")) bundle.notes.push("no child-process accounting on this machine: no CPU, memory or outside-load figures");
   if (plan?.backend === "perf" && plan.unavailable.length) bundle.notes.push(`counters this machine would not count (left out): ${plan.unavailable.join(", ")}`);
   if (plan?.backend === "perf" && plan.groups.length > 1)
-    bundle.notes.push(`this machine counts one hardware event at a time: ${plan.groups.length} counted runs per count (${plan.groups.map((g) => g.join("+")).join(" / ")})`);
+    bundle.notes.push(`this machine counts one hardware event at a time: ${plan.groups.length} counted runs per count (${plan.groups.map((g) => g.join("+")).join(" / ")}); IPC divides medians from different runs`);
   for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state), ...calibration.notes]) {
     if (!note) continue;
     bundle.notes.push(note);

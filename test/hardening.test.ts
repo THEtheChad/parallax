@@ -11,18 +11,21 @@ import { expandCpuList, parsePinning, pinCommand } from "../src/host/pinning.ts"
 import { baseEnv, FIXED_ENV } from "../src/host/sealedEnv.ts";
 import { bindSide, loadProfile, resolveEnv, sidesInModes } from "../src/profile/profile.ts";
 import {
-  benchFloors,
+  binomialQuantile,
   CALIBRATION_SCHEMA,
   checkCalibration,
+  floorsOf,
+  hostKey,
   loadCalibration,
   saveCalibration,
   suggestResolution,
   type Calibration,
   type HostKey,
 } from "../src/timing/calibration.ts";
+import type { Call } from "../src/timing/stats.ts";
 import { errorLine, exportedNames, importAction, importCandidates, theilSen } from "../src/timing/lspSession.ts";
 import { summarizeLspBench, type SessionRecord } from "../src/timing/lspSummary.ts";
-import type { BenchSummary, RoundRecord } from "../src/timing/summary.ts";
+import type { RoundRecord } from "../src/timing/summary.ts";
 
 test("sealed environment: only the allow-list passes, fixed locale and zone; inherit keeps everything", () => {
   const from = { PATH: "/bin", HOME: "/h", GOGC: "off", RAYON_NUM_THREADS: "3", NODE_OPTIONS: "--x", LANG: "de_DE.UTF-8", KEEP_ME: "1" };
@@ -36,6 +39,7 @@ test("sealed environment: only the allow-list passes, fixed locale and zone; inh
   const win = baseEnv({ mode: "sealed", pass: [] }, { Path: "C:\\w", SYSTEMROOT: "C:\\Windows", GOGC: "1" }, "win32");
   assert.deepEqual(win.passed, ["Path", "SYSTEMROOT"]);
   assert.equal(win.env.GOGC, undefined);
+  assert.equal(baseEnv({ mode: "sealed", pass: [] }, {}, "darwin").env.LC_ALL, "en_US.UTF-8", "macOS has no C.UTF-8");
 });
 
 test("sealed environment: a side's profile settings and thread mode apply on top, and are recorded", async () => {
@@ -90,39 +94,37 @@ test("counters: zero and multiplexed counts are dropped, and a machine that cann
   assert.deepEqual(planGroups([], null), []);
 });
 
-const interval = (low: number, high: number, n = 9) => ({ estimate: (low + high) / 2, low, high, confidence: 0.96, n });
+// An A/A comparison: per round, the reference's and the twin's values with the twin off by `noise`.
+const aa = (mode: "default" | "single", metric: string, ref: number, noise: number[], call: Call | null = "same", coverage = 0.961) => ({
+  mode,
+  metrics: [{ metric, ms: true, pairs: noise.map((e) => [ref, ref * (1 + e)] as [number, number]), call, coverage }],
+});
 
-function aaSummary(): BenchSummary {
-  return {
-    candidates: [
-      { label: "tsc7.aa", ref: "tsc7", mode: "default", state: "measured", wallRatio: interval(0.97, 1.04), cpuRatio: interval(0.99, 1.01), call: "same", sameWithin: 0.05 },
-      { label: "tsc7.aa@1t", ref: "tsc7@1t", mode: "single", state: "measured", wallRatio: interval(1.02, 1.03), cpuRatio: null, call: "slower", sameWithin: 0.05 },
-    ],
-    counters: {
-      backend: "perf",
-      sides: [
-        { label: "tsc7@1t", runs: 3, instructions: { median: 1000, spread: 0.0002 }, cycles: null, ipc: null, taskClockMs: null, pageFaults: null },
-        { label: "tsc7.aa@1t", runs: 3, instructions: { median: 1001, spread: 0.0004 }, cycles: null, ipc: null, taskClockMs: null, pageFaults: null },
-      ],
-    },
-  } as unknown as BenchSummary;
-}
-
-test("calibration: floors from the A/A intervals, false calls named, a resolution below the floor warned about", () => {
-  const { floors, falseCalls } = benchFloors(aaSummary());
+test("calibration: floors at a bench's first look, ms widening, false calls against chance", () => {
+  const noisy = [-0.04, 0.03, -0.02, 0.05, 0.01, -0.03, 0.02, -0.05, 0.04];
+  const quiet = noisy.map((e) => e / 10);
+  const { floors, falseCalls, falseCallsExpected, excessFalseCalls } = floorsOf(
+    [aa("default", "wallMs", 200, noisy), aa("single", "wallMs", 400, quiet, "slower"), aa("default", "hover", 0.3, noisy)],
+    [{ mode: "single", floor: 0.001 }],
+  );
   const wall = floors.find((f) => f.metric === "wallMs" && f.mode === "default")!;
-  assert.ok(Math.abs(wall.floor - 0.04) < 1e-9);
-  assert.equal(wall.suggested, 0.04);
-  assert.equal(suggestResolution(0.0001), 0.01);
+  // At 6 rounds and 95% the interval is the whole range of 6 resampled ratios: nine times in ten it
+  // reaches the extremes, about 5%.
+  assert.ok(wall.floor >= 0.04 && wall.floor <= 0.0501, `floor ${wall.floor}`);
+  assert.equal(wall.ratios.length, 9);
+  assert.equal(wall.refMedianMs, 200);
+  assert.equal(floors.find((f) => f.metric === "instructions")!.suggested, 0.01);
   assert.equal(suggestResolution(0.061), 0.065);
-  const instr = floors.find((f) => f.metric === "instructions")!;
-  assert.ok(Math.abs(instr.floor - 0.001) < 1e-9);
   assert.deepEqual(falseCalls, ["wallMs@single"]);
+  assert.ok(falseCallsExpected >= 1, "one false call in three comparisons is within chance");
+  assert.equal(excessFalseCalls, false);
+  assert.equal(binomialQuantile(52, 0.039, 0.95), 5);
+  assert.equal(binomialQuantile(10, 0, 0.95), 0);
 
   const host: HostKey = { platform: "linux", arch: "x64", kernel: "6", cpuModel: "cpu", cpus: 8, pin: null };
   const cal: Calibration = {
     schema: CALIBRATION_SCHEMA,
-    kind: "cli-bench",
+    kind: "lsp-bench",
     createdAt: "2026-11-18T00:00:00Z",
     host,
     side: { profile: "tsc7", binSha256: "x", version: null },
@@ -130,23 +132,33 @@ test("calibration: floors from the A/A intervals, false calls named, a resolutio
     rounds: { planned: 9, accepted: 9, rejected: 0 },
     floors,
     falseCalls,
+    falseCallsExpected,
+    excessFalseCalls,
   };
-  const loose = checkCalibration(cal, host, { resolution: 0.05, runs: 6, modes: ["default"], metrics: ["wallMs"] });
-  assert.deepEqual(loose.notes.filter((n) => n.includes("noise floor")), []);
-  assert.equal(loose.notes.length, 0, "the false call is in single mode, which this bench does not run");
-  const tight = checkCalibration(cal, host, { resolution: 0.02, runs: 6, modes: ["default", "single"], metrics: ["wallMs"] });
-  assert.ok(tight.notes.some((n) => /below this machine's A\/A noise floor \(wallMs@default 4\.0%/.test(n)), tight.notes.join("\n"));
-  assert.ok(tight.notes.some((n) => /called a binary different from itself/.test(n)));
-  assert.ok(checkCalibration(cal, { ...host, pin: "0-3" }, { resolution: 0.05, runs: 6, modes: ["default"] }).notes[0]!.includes("another host setup"));
-  assert.equal(checkCalibration(null, host, { resolution: 0.05, runs: 6, modes: ["default"] }).ref, null);
+  const plan = { resolution: 0.05, resolutionMs: 1, runs: 6, maxRuns: 15 };
+  const ok = checkCalibration(cal, host, { ...plan, resolution: 0.06, modes: ["default", "single"] });
+  assert.deepEqual(ok.notes, [], "a 0.3 ms hover is 'same' within 1 ms, whatever its relative noise");
+  const tight = checkCalibration(cal, host, { ...plan, resolution: 0.02, modes: ["default"] });
+  assert.equal(tight.notes.length, 1);
+  assert.match(tight.notes[0]!, /at 6 rounds this machine's A\/A noise reaches wallMs@default 5\.0%/);
+  assert.ok(!tight.notes[0]!.includes("hover"));
+  // Fewer rounds at the first look: a wider floor.
+  const three = checkCalibration(cal, host, { ...plan, runs: 3, maxRuns: 3, modes: ["single"] }).ref!;
+  const nine = checkCalibration(cal, host, { ...plan, runs: 9, maxRuns: 9, modes: ["single"] }).ref!;
+  assert.ok(three.floors[0]!.floor >= nine.floors[0]!.floor);
+  assert.ok(checkCalibration({ ...cal, excessFalseCalls: true }, host, { ...plan, modes: ["default"] }).notes[0]!.includes("more often than chance explains"));
+  // Pinning lists compare by the cores they name.
+  assert.equal(hostKey({ ...host }, "2-5").pin, hostKey({ ...host }, "2,3,4,5").pin);
+  assert.ok(checkCalibration(cal, { ...host, pin: "0,1" }, { ...plan, modes: ["default"] }).notes[0]!.includes("another host setup"));
+  assert.equal(checkCalibration(null, host, { ...plan, modes: ["default"] }).ref, null);
 
   const saved = process.env.PARALLAX_CONFIG_DIR;
   process.env.PARALLAX_CONFIG_DIR = mkdtempSync(join(tmpdir(), "parallax-config-"));
   try {
-    assert.equal(loadCalibration("cli-bench"), null);
-    saveCalibration(cal);
-    assert.deepEqual(loadCalibration("cli-bench"), cal);
     assert.equal(loadCalibration("lsp-bench"), null);
+    saveCalibration(cal);
+    assert.deepEqual(loadCalibration("lsp-bench"), cal);
+    assert.equal(loadCalibration("cli-bench"), null);
   } finally {
     if (saved === undefined) delete process.env.PARALLAX_CONFIG_DIR;
     else process.env.PARALLAX_CONFIG_DIR = saved;

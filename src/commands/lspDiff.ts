@@ -5,6 +5,7 @@
 // repeat is spread over the job and time-dependent drift shows up as reference instability. One server
 // runs at a time.
 
+import type { EnvPolicy } from "../host/sealedEnv.ts";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { loadavg } from "node:os";
 import { join, resolve } from "node:path";
@@ -39,6 +40,8 @@ export interface LspDiffOptions {
   candRuns: number;
   requestTimeoutMs?: number;
   refEvidence?: string[];
+  // How each server's environment is built (default sealed; host/sealedEnv.ts).
+  env?: EnvPolicy;
   log: (msg: string) => void;
 }
 
@@ -53,9 +56,9 @@ export async function lspDiff(opts: LspDiffOptions): Promise<{ dir: string; bund
   const root = resolve(opts.project);
   if (!existsSync(root)) throw new Error(`no project at ${root}`);
   if (!opts.cands.length) throw new Error("at least one --cand is needed");
-  const ref = await bindSide(opts.ref, "ref");
+  const ref = await bindSide(opts.ref, "ref", opts.env ? { env: opts.env } : {});
   const cands: Side[] = [];
-  for (const c of opts.cands) cands.push(await bindSide(c, "cand"));
+  for (const c of opts.cands) cands.push(await bindSide(c, "cand", opts.env ? { env: opts.env } : {}));
   const labels = [ref, ...cands].map((s) => s.label);
   if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")}); use <label>:<profile>=<bin>`);
 

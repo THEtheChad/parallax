@@ -24,7 +24,7 @@ import { renderSummary } from "./report/summary.ts";
 const USAGE = `usage:
   parallax lsp-diff --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
                     [--files 6] [--file <rel>]... [--positions 4] [--ref-runs 2] [--cand-runs 1] [--request-timeout-ms 600000]
-                    [--ref-evidence <bundle-dir>]...
+                    [--ref-evidence <bundle-dir>]... [--env sealed|inherit] [--pass-env NAME]...
   parallax compare <bundle-dir> [--ref-evidence <bundle-dir>]...
                                          recompute verdicts.jsonl, summary.json and differences/ from runs/;
                                          reference answers in compatible evidence bundles count as reference variants
@@ -96,6 +96,8 @@ async function main(argv: string[]): Promise<number> {
         "cand-runs": { type: "string", default: "1" },
         "request-timeout-ms": { type: "string", default: "600000" },
         "ref-evidence": { type: "string", multiple: true },
+        env: { type: "string" },
+        "pass-env": { type: "string", multiple: true },
       },
     });
     if (!o.project || !o.out || !o.ref || !o.cand?.length) throw new UsageError("lsp-diff needs --project, --out, --ref and --cand");
@@ -111,6 +113,7 @@ async function main(argv: string[]): Promise<number> {
       candRuns: Number(o["cand-runs"]),
       requestTimeoutMs: Number(o["request-timeout-ms"]),
       refEvidence: (o["ref-evidence"] ?? []).map((d) => resolve(d)),
+      ...defined({ env: envOption(o) }),
       log,
     });
     summary = r.summary;
@@ -218,15 +221,7 @@ function roundOptions(o: Values) {
       throw new UsageError((e as Error).message);
     }
   }
-  let env: EnvPolicy | undefined;
-  if (typeof o.env === "string" || Array.isArray(o["pass-env"])) {
-    try {
-      env = { mode: typeof o.env === "string" ? parseEnvMode(o.env) : "sealed", pass: Array.isArray(o["pass-env"]) ? o["pass-env"] : [] };
-    } catch (e) {
-      throw new UsageError((e as Error).message);
-    }
-    if (env.mode === "inherit" && env.pass.length) throw new UsageError("--pass-env only applies to --env sealed");
-  }
+  const env = envOption(o);
   return {
     ...defined({
       threads,
@@ -247,6 +242,18 @@ function roundOptions(o: Values) {
     }),
     gates: gateOptions(o),
   };
+}
+
+function envOption(o: Values): EnvPolicy | undefined {
+  if (typeof o.env !== "string" && !Array.isArray(o["pass-env"])) return undefined;
+  let env: EnvPolicy;
+  try {
+    env = { mode: typeof o.env === "string" ? parseEnvMode(o.env) : "sealed", pass: Array.isArray(o["pass-env"]) ? o["pass-env"] : [] };
+  } catch (e) {
+    throw new UsageError((e as Error).message);
+  }
+  if (env.mode === "inherit" && env.pass.length) throw new UsageError("--pass-env only applies to --env sealed");
+  return env;
 }
 
 const gateOptions = (o: Values) => defined({ maxOutsideCores: num(o, "max-outside-cores"), maxCanaryDrift: num(o, "max-canary-drift") });

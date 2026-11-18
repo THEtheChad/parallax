@@ -186,7 +186,11 @@ export async function countCommand(opts: { command: string[]; cwd: string; env: 
     const r = await countOnce(opts, events);
     last = r.exit;
     if (r.timedOut || r.exit.signal !== null) return { exit: r.exit, timedOut: r.timedOut, counters: null, runs: groups.length, scaled, missing };
-    if (!r.stat) continue;
+    if (!r.stat) {
+      // perf wrote no report: the group's events were not counted this run.
+      missing.push(...events.map(eventName));
+      continue;
+    }
     any = true;
     for (const k of Object.keys(merged) as (keyof Counters)[]) merged[k] ??= r.stat.counters[k];
     scaled.push(...r.stat.scaled);

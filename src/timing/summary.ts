@@ -106,7 +106,8 @@ export function judgeRound(r: Pick<RoundRecord, "idle" | "outsideCores" | "canar
   return reasons;
 }
 
-const failed = (s: SampleRecord): boolean => s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0;
+export const sampleFailed = (s: SampleRecord): boolean => s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0;
+const failed = sampleFailed;
 
 export type CandidateState = "measured" | "noisy" | "failed";
 
