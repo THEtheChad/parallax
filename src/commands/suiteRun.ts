@@ -33,18 +33,22 @@ export async function suiteRun(opts: SuiteRunOptions): Promise<SuiteRunOutcome[]
   const { projects: names, only, publishTo, out, log, ...shared } = opts;
   const outcomes: SuiteRunOutcome[] = [];
   for (const p of selectProjects(loadSuite(), names)) {
+    const benches = Boolean(p.bench) && only !== "lsp-bench";
+    const lspBenches = Boolean(p.lspBench) && only !== "bench";
+    // A project with nothing to run under --only is not fetched (installing one can take minutes).
+    if (!benches && !lspBenches) continue;
     const dir = fetchProject(p, log);
     const done = (kind: SuiteRunOutcome["kind"], bundleDir: string, clean: boolean): void => {
       const o: SuiteRunOutcome = { project: p.name, kind, dir: bundleDir, clean };
       if (publishTo) o.published = publish({ bundleDir, out: publishTo, log }).file;
       outcomes.push(o);
     };
-    if (p.bench && only !== "lsp-bench") {
+    if (p.bench && benches) {
       log(`\n== ${p.name}: bench (${p.bench.config})`);
       const r = await bench({ ...shared, project: dir, config: p.bench.config, out: join(out, `${p.name}-bench`), log });
       done("bench", r.dir, r.summary.clean);
     }
-    if (p.lspBench && only !== "bench") {
+    if (p.lspBench && lspBenches) {
       log(`\n== ${p.name}: lsp-bench`);
       const r = await lspBench({
         ...shared,
