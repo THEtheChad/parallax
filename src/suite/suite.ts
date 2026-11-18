@@ -86,7 +86,8 @@ interface FetchMarker {
 
 const run = (cmd: string, args: string[], cwd: string, log: (msg: string) => void): void => {
   log(`$ ${[cmd, ...args].join(" ")}`);
-  const r = spawnSync(cmd, args, { cwd, stdio: ["ignore", "inherit", "inherit"], shell: platform() === "win32" });
+  // Their output goes to stderr with the rest of the log: stdout is the run's summary.
+  const r = spawnSync(cmd, args, { cwd, stdio: ["ignore", 2, 2], shell: platform() === "win32" });
   if (r.error) throw new Error(`${cmd}: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`${[cmd, ...args].join(" ")} exited ${r.status ?? r.signal}`);
 };
