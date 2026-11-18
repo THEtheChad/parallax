@@ -65,6 +65,7 @@ test("sealed environment: a side's profile settings and thread mode apply on top
 
 test("pinning: cpu lists, validation against the allowed cores, the taskset prefix", () => {
   assert.deepEqual(expandCpuList("0-2,5,1"), [0, 1, 2, 5]);
+  if (process.platform === "linux") assert.equal(parsePinning("0,0", null, "linux").cores, 1, "a core named twice is one core");
   assert.throws(() => expandCpuList("a-b"), /not a cpu list/);
   assert.throws(() => expandCpuList("3-1"), /backwards/);
   assert.throws(() => expandCpuList("9007199254740992"), /beyond any machine/, "a huge number is refused, not looped over");
@@ -87,7 +88,9 @@ test("counters: zero and multiplexed counts are dropped, and a machine that cann
   assert.deepEqual(zero!.missing, ["cycles"], "a counter reading 0 (a VM that exposes but never counts it) is missing, not 0");
   assert.equal(zero!.counters.cycles, null);
   const all = ["instructions:u", "cycles:u", "task-clock", "page-faults"];
-  assert.deepEqual(planGroups(all, { counters: zero!.counters, scaled: [], missing: [] }), [all]);
+  const full = { instructions: 1, cycles: 1, taskClockMs: 1, pageFaults: 1 };
+  assert.deepEqual(planGroups(all, { counters: full, scaled: [], missing: [] }), [all]);
+  assert.deepEqual(planGroups(all, { counters: { ...full, pageFaults: null }, scaled: [], missing: [] }).length, 2, "an event with no line at all is not working together");
   assert.deepEqual(planGroups(all, zero), [["instructions:u", "task-clock", "page-faults"], ["cycles:u"]]);
   assert.deepEqual(planGroups(all, null, false), [["instructions:u", "task-clock", "page-faults"], ["cycles:u"]]);
   assert.deepEqual(planGroups(["task-clock"], null), [["task-clock"]]);
@@ -121,7 +124,7 @@ test("calibration: floors at a bench's first look, ms widening, false calls agai
   assert.equal(binomialQuantile(52, 0.039, 0.95), 5);
   assert.equal(binomialQuantile(10, 0, 0.95), 0);
 
-  const host: HostKey = { platform: "linux", arch: "x64", kernel: "6", cpuModel: "cpu", cpus: 8, pin: null };
+  const host: HostKey = { platform: "linux", arch: "x64", kernel: "6", cpuModel: "cpu", cpus: 8, pin: null, affinity: "0,1,2,3,4,5,6,7" };
   const cal: Calibration = {
     schema: CALIBRATION_SCHEMA,
     kind: "lsp-bench",
@@ -151,6 +154,8 @@ test("calibration: floors at a bench's first look, ms widening, false calls agai
   assert.equal(hostKey({ ...host }, "2-5").pin, hostKey({ ...host }, "2,3,4,5").pin);
   assert.ok(checkCalibration(cal, { ...host, pin: "0,1" }, { ...plan, modes: ["default"] }).notes[0]!.includes("another host setup"));
   assert.equal(checkCalibration(null, host, { ...plan, modes: ["default"] }).ref, null);
+  // A calibration taken inside a taskset of four cores does not speak for the whole machine.
+  assert.ok(checkCalibration(cal, { ...host, affinity: "0,1,2,3" }, { ...plan, modes: ["default"] }).notes[0]!.includes("another host setup"));
 
   const saved = process.env.PARALLAX_CONFIG_DIR;
   process.env.PARALLAX_CONFIG_DIR = mkdtempSync(join(tmpdir(), "parallax-config-"));
@@ -176,6 +181,10 @@ test("editor scenarios: exported names, import candidates, the error line, Theil
   assert.deepEqual(exportedNames(other), ["Thing", "valueOne", "loadAll"]);
   assert.deepEqual(importCandidates("const x: Thing = 1;", [other, "export class Widget {}\n"], 3), ["valueOne", "Widget", "loadAll"]);
   assert.deepEqual(importCandidates("", [], 3), []);
+  // $ is part of a name: "$store" is in use in "x = $store;", and "store$" in "store$.next()".
+  assert.deepEqual(importCandidates("x = $store; store$.next();", ["export const $store = 1;\nexport const store$ = 2;\nexport const $storeAll = 3;\n"], 3), ["$storeAll"]);
+  // Declarations inside strings and comments are not exports.
+  assert.deepEqual(exportedNames("const s = `\nexport const fakeName = 1;\n`;\n// export const other = 2\nexport const realName = 3;\n"), ["realName"]);
   assert.match(errorLine(2), /^\nconst parallaxError2: number = "/);
   assert.equal(theilSen([[0, 0], [1, 10], [2, 20], [3, 30], [4, 1000]]), 10, "one outlier moves it little");
   assert.equal(theilSen([[0, 5]]), null);

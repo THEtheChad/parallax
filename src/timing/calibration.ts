@@ -62,6 +62,8 @@ export interface HostKey {
   cpus: number;
   // Cores the commands were pinned to, normalized ("2,3,4,5"); null: not pinned.
   pin: string | null;
+  // Cores the harness itself may run on (a taskset or cgroup around it), normalized; null: unknown.
+  affinity: string | null;
 }
 
 export interface Calibration {
@@ -83,17 +85,18 @@ export interface Calibration {
 
 const normalizePin = (pin: string | null): string | null => (pin === null ? null : expandCpuList(pin).join(","));
 
-export const hostKey = (h: Pick<HostInfo, "platform" | "arch" | "kernel" | "cpuModel" | "cpus">, pin: string | null): HostKey => ({
+export const hostKey = (h: Pick<HostInfo, "platform" | "arch" | "kernel" | "cpuModel" | "cpus"> & { state?: HostInfo["state"] }, pin: string | null): HostKey => ({
   platform: h.platform,
   arch: h.arch,
   kernel: h.kernel,
   cpuModel: h.cpuModel,
   cpus: h.cpus,
   pin: normalizePin(pin),
+  affinity: normalizePin(h.state?.affinity?.list ?? null),
 });
 
 export const sameHost = (a: HostKey, b: HostKey): boolean =>
-  a.platform === b.platform && a.arch === b.arch && a.kernel === b.kernel && a.cpuModel === b.cpuModel && a.cpus === b.cpus && a.pin === b.pin;
+  a.platform === b.platform && a.arch === b.arch && a.kernel === b.kernel && a.cpuModel === b.cpuModel && a.cpus === b.cpus && a.pin === b.pin && a.affinity === b.affinity;
 
 export const suggestResolution = (floor: number): number => Math.max(0.01, Math.ceil(floor * 200 - 1e-9) / 200);
 
@@ -216,7 +219,7 @@ export interface BenchPlan {
 // Compares a bench's plan with the stored calibration for this host.
 export function checkCalibration(c: Calibration | null, here: HostKey, bench: BenchPlan): CalibrationCheck {
   if (!c) return { ref: null, notes: ["this machine has no noise calibration: `parallax calibrate` measures the smallest difference it can resolve"] };
-  if (!sameHost(c.host, here)) return { ref: null, notes: ["the stored noise calibration is from another host setup (CPU, kernel or pinning): run `parallax calibrate` again"] };
+  if (!sameHost(c.host, here)) return { ref: null, notes: ["the stored noise calibration is from another host setup (CPU, kernel, pinning or the cores available): run `parallax calibrate` again"] };
   const confidence = lookConfidence(bench.runs, planOf(bench.runs, bench.maxRuns));
   const floors: CalibrationRef["floors"] = [];
   for (const f of c.floors) {

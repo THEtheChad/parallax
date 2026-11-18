@@ -13,6 +13,8 @@ import { publish, scrub, verifyResult } from "../src/commands/publish.ts";
 import { loadSuite, selectProjects, suiteProjectFor, validateSuite } from "../src/suite/suite.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// The machine id and any calibration live in a scratch config directory, not the user's.
+process.env.PARALLAX_CONFIG_DIR = mkdtempSync(join(tmpdir(), "parallax-config-"));
 const fake = join(here, "fixtures/fake-check.ts");
 const side = (name: string): string => `${join(here, "fixtures/profiles", `${name}.json`)}=${fake}`;
 const open = { idle: { maxBusyCores: Infinity, bootSettleS: 0, windowMs: 100 }, gates: { maxOutsideCores: Infinity, maxCanaryDrift: Infinity } };

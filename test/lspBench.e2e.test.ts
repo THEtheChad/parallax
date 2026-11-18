@@ -179,5 +179,36 @@ test("lsp-bench: a server that defers the add-import edit to codeAction/resolve 
   for (const s of summary.sides) {
     assert.equal(s.importsMissed, 0);
     assert.ok(s.metrics["imports.quickFixMs"]!.estimate > 0);
+    assert.ok(s.metrics["imports.completionMs"]!.estimate > 0, "the completions offered the names");
   }
+});
+
+test("lsp-bench: a server that does not support code actions gets no fix figure, not a fast one", async () => {
+  const { summary } = await lspBench({
+    project: makeProject(),
+    out: join(mkdtempSync(join(tmpdir(), "parallax-lspbench-")), "b"),
+    ref: side("fake-lsp-quick", "full"),
+    cands: [side("fake-lsp-noactions", "partial")],
+    edits: 0,
+    lines: 0,
+    serviceLines: 0,
+    pausedLines: 0,
+    errfixes: 0,
+    imports: 2,
+    longEdits: 0,
+    threads: ["default"],
+    runs: 1,
+    maxRuns: 1,
+    minRounds: 1,
+    warmup: 0,
+    attempts: 1,
+    log: quiet,
+    ...open,
+  });
+  const partial = summary.sides.find((s) => s.label === "partial")!;
+  assert.equal(partial.importsMissed, 2);
+  assert.equal(partial.errors, 2);
+  assert.equal(partial.metrics["imports.quickFixMs"], null);
+  assert.equal(summary.candidates[0]!.metrics["imports.quickFixMs"]!.ratio, null);
+  assert.equal(summary.candidates[0]!.metrics["imports.quickFixMs"]!.call, null);
 });

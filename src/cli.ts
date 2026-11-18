@@ -13,6 +13,7 @@ import { publish, verifyResult } from "./commands/publish.ts";
 import { calibrate } from "./commands/calibrate.ts";
 import { renderCalibration } from "./report/calibration.ts";
 import { parseEnvMode, type EnvPolicy } from "./host/sealedEnv.ts";
+import { expandCpuList } from "./host/pinning.ts";
 import { suiteRun } from "./commands/suiteRun.ts";
 import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
 import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
@@ -106,12 +107,12 @@ async function main(argv: string[]): Promise<number> {
       out: o.out,
       ref: o.ref,
       cands: o.cand,
-      files: Number(o.files),
+      files: int(o, "files", 1)!,
       ...(o.file ? { file: o.file } : {}),
-      positions: Number(o.positions),
-      refRuns: Number(o["ref-runs"]),
-      candRuns: Number(o["cand-runs"]),
-      requestTimeoutMs: Number(o["request-timeout-ms"]),
+      positions: int(o, "positions")!,
+      refRuns: int(o, "ref-runs", 1)!,
+      candRuns: int(o, "cand-runs", 1)!,
+      requestTimeoutMs: positive(o, "request-timeout-ms")!,
       refEvidence: (o["ref-evidence"] ?? []).map((d) => resolve(d)),
       ...defined({ env: envOption(o) }),
       log,
@@ -150,6 +151,20 @@ function num(o: Record<string, string | boolean | string[] | undefined>, name: s
   if (v === undefined) return undefined;
   const n = Number(v);
   if (typeof v !== "string" || !Number.isFinite(n) || n < 0) throw new UsageError(`--${name} wants a non-negative number`);
+  return n;
+}
+
+// A whole number (counts of runs, edits, files): `min` 1 where 0 would mean nothing at all to do.
+function int(o: Record<string, string | boolean | string[] | undefined>, name: string, min = 0): number | undefined {
+  const n = num(o, name);
+  if (n !== undefined && (!Number.isInteger(n) || n < min)) throw new UsageError(`--${name} wants a whole number${min ? ` of at least ${min}` : ""}`);
+  return n;
+}
+
+// A time limit: more than 0 (0 would mean no limit, and a server that never answers would hang).
+function positive(o: Record<string, string | boolean | string[] | undefined>, name: string): number | undefined {
+  const n = num(o, name);
+  if (n !== undefined && !(n > 0)) throw new UsageError(`--${name} wants a number more than 0`);
   return n;
 }
 
@@ -194,17 +209,17 @@ function lspSessionOptions(o: Values) {
   return {
     ...(Array.isArray(o.file) ? { file: o.file } : {}),
     ...defined({
-      files: num(o, "files"),
-      edits: num(o, "edits"),
-      intervalMs: num(o, "interval-ms"),
-      lines: num(o, "lines"),
-      serviceLines: num(o, "service-lines"),
-      pausedLines: num(o, "paused-lines"),
+      files: int(o, "files", 1),
+      edits: int(o, "edits"),
+      intervalMs: positive(o, "interval-ms"),
+      lines: int(o, "lines"),
+      serviceLines: int(o, "service-lines"),
+      pausedLines: int(o, "paused-lines"),
       pauseMs: num(o, "pause-ms"),
-      errfixes: num(o, "errfixes"),
-      imports: num(o, "imports"),
-      longEdits: num(o, "long-edits"),
-      requestTimeoutMs: num(o, "request-timeout-ms"),
+      errfixes: int(o, "errfixes"),
+      imports: int(o, "imports"),
+      longEdits: int(o, "long-edits"),
+      requestTimeoutMs: positive(o, "request-timeout-ms"),
     }),
   };
 }
@@ -226,14 +241,14 @@ function roundOptions(o: Values) {
     ...defined({
       threads,
       env,
-      pin: typeof o.pin === "string" ? o.pin : undefined,
-      runs: num(o, "runs"),
-      maxRuns: num(o, "max-runs"),
-      minRounds: num(o, "min-runs"),
+      pin: typeof o.pin === "string" ? pinOption(o.pin) : undefined,
+      runs: int(o, "runs", 1),
+      maxRuns: int(o, "max-runs"),
+      minRounds: int(o, "min-runs", 1),
       resolution: num(o, "resolution"),
       resolutionMs: num(o, "resolution-ms"),
-      warmup: num(o, "warmup"),
-      attempts: num(o, "attempts"),
+      warmup: int(o, "warmup"),
+      attempts: int(o, "attempts", 1),
     }),
     idle: defined({
       maxBusyCores: num(o, "max-busy-cores"),
@@ -242,6 +257,18 @@ function roundOptions(o: Values) {
     }),
     gates: gateOptions(o),
   };
+}
+
+// Checked here, before anything runs (a suite run would otherwise fetch a project first); the
+// commands check it again against the cores this process may use.
+function pinOption(list: string): string {
+  try {
+    if (process.platform !== "linux") throw new Error("--pin needs Linux (taskset)");
+    expandCpuList(list);
+  } catch (e) {
+    throw new UsageError((e as Error).message);
+  }
+  return list;
 }
 
 function envOption(o: Values): EnvPolicy | undefined {
@@ -334,7 +361,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
       out: o.out,
       ref: o.ref,
       cands: o.cand,
-      ...defined({ config: o.config, timeoutMs: num(o, "timeout-ms"), counterRuns: num(o, "counter-runs") }),
+      ...defined({ config: o.config, timeoutMs: positive(o, "timeout-ms"), counterRuns: int(o, "counter-runs") }),
       ...roundOptions(o),
       log,
     });
@@ -387,13 +414,16 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
     if (o.kind !== "bench" && o.kind !== "lsp-bench") throw new UsageError("calibrate needs --kind bench or --kind lsp-bench");
     if (!o.project || !o.out || !o.side) throw new UsageError("calibrate needs --project, --out and --side");
     if (o["max-runs"] !== undefined) throw new UsageError("calibrate runs a fixed number of rounds: use --runs, not --max-runs");
+    // Options of the other kind would be ignored: refuse them rather than calibrate another workload.
+    const foreign = (o.kind === "bench" ? Object.keys(LSP_SESSION_OPTIONS) : ["config", "counter-runs", "timeout-ms"]).filter((k) => (o as Values)[k] !== undefined);
+    if (foreign.length) throw new UsageError(`calibrate --kind ${o.kind} does not take ${foreign.map((k) => `--${k}`).join(", ")}`);
     const r = await calibrate({
       kind: o.kind === "bench" ? "cli-bench" : "lsp-bench",
       side: o.side,
       project: o.project,
       out: o.out,
       save: o["no-save"] !== true,
-      ...defined({ config: o.config, timeoutMs: num(o, "timeout-ms"), counterRuns: num(o, "counter-runs") }),
+      ...defined({ config: o.config, timeoutMs: positive(o, "timeout-ms"), counterRuns: int(o, "counter-runs") }),
       ...lspSessionOptions(o),
       ...roundOptions(o),
       log,

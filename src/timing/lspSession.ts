@@ -50,7 +50,7 @@ import { serverUsage, type ServerUsage } from "../host/serverUsage.ts";
 import { LspClient, RequestTimeout, ServerExited, type Answer } from "../lsp/client.ts";
 import { crashSignals, type Side } from "../profile/profile.ts";
 import { fileUri, initializeParams } from "../session/initialize.ts";
-import { endPosition, languageId, pickPositions, readText, type Position } from "../session/picker.ts";
+import { endPosition, languageId, maskNonCode, pickPositions, readText, type Position } from "../session/picker.ts";
 import { TYPED } from "../session/script.ts";
 import { pinCommand, type Pinning } from "../host/pinning.ts";
 import { median, quantile } from "./stats.ts";
@@ -130,6 +130,8 @@ export interface SessionCounts {
   errfixMissed?: number;
   importNames?: number;
   importsMissed?: number;
+  // Import completions that failed or did not offer the name.
+  importCompletionsMissed?: number;
 }
 
 export interface SessionResult {
@@ -153,7 +155,9 @@ type Phase = "open" | "warmup" | "edit" | "typing" | "service" | "paused" | "err
 export const errorLine = (i: number): string => `\nconst parallaxError${i}: number = "not a number";\n`;
 
 // Names exported by `text` (declarations only; re-exports and default exports are skipped).
-export function exportedNames(text: string): string[] {
+export function exportedNames(source: string): string[] {
+  // Code only: an "export const" inside a string, template or comment is not a declaration.
+  const text = maskNonCode(source);
   const re = /^export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|interface|type|enum|abstract\s+class)\s+([A-Za-z_$][\w$]*)/gm;
   return [...new Set([...text.matchAll(re)].map((m) => m[1]!))];
 }
@@ -161,7 +165,10 @@ export function exportedNames(text: string): string[] {
 // Up to `count` names exported by the other files and absent from the edited one, taken round-robin
 // across files in file order, so every server is asked the same names.
 export function importCandidates(edited: string, others: string[], count: number): string[] {
-  const lists = others.map((t) => exportedNames(t).filter((n) => n.length >= 4 && !new RegExp(`\\b${n.replace(/\$/g, "\\$")}\\b`).test(edited)));
+  // A name is in use when it appears with no identifier character on either side ($ is one, so \b
+  // cannot be the boundary).
+  const used = (n: string): boolean => new RegExp(`(^|[^\\w$])${n.replace(/\$/g, "\\$")}(?![\\w$])`).test(edited);
+  const lists = others.map((t) => exportedNames(t).filter((n) => n.length >= 4 && !used(n)));
   const out: string[] = [];
   for (let i = 0; out.length < count && lists.some((l) => i < l.length); i++)
     for (const l of lists) if (i < l.length && out.length < count && !out.includes(l[i]!)) out.push(l[i]!);
@@ -187,11 +194,19 @@ export function importAction(a: Answer): { title: string; edit?: unknown; data?:
   return (found as { title: string; edit?: unknown; data?: unknown } | undefined) ?? null;
 }
 
-const diagnosticItems = (a: Answer): { range?: { start?: { line?: number } } }[] => {
+// The well-formed items of a diagnostics answer (an item without a numeric start line is skipped).
+const diagnosticItems = (a: Answer): { range: { start: { line: number } } }[] => {
   const r = a.result as { items?: unknown[] } | unknown[] | null | undefined;
   const items = Array.isArray(r) ? r : r && Array.isArray(r.items) ? r.items : [];
-  return items as { range?: { start?: { line?: number } } }[];
+  return items.filter((x): x is { range: { start: { line: number } } } => typeof (x as { range?: { start?: { line?: unknown } } } | null)?.range?.start?.line === "number");
 };
+
+// The labels of a completion answer (a list, or { items }).
+export function completionLabels(a: Answer): string[] {
+  const r = a.result as { items?: unknown[] } | unknown[] | null | undefined;
+  const items = Array.isArray(r) ? r : r && Array.isArray(r.items) ? r.items : [];
+  return items.map((x) => (x as { label?: unknown } | null)?.label).filter((l): l is string => typeof l === "string");
+}
 
 interface Doc {
   uri: string;
@@ -299,7 +314,12 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
     });
     return { id: sent.id, answer };
   };
-  const timed = (phase: Phase, kind: string, method: string, params: unknown): Promise<{ answer: Answer; latencyMs: number }> => ask(phase, kind, method, params).answer;
+  // `failed`: an error answer (a method the server does not support, a crash inside it) or a
+  // cancellation: a time, but not of the work asked for.
+  const timed = async (phase: Phase, kind: string, method: string, params: unknown): Promise<{ answer: Answer; latencyMs: number; failed: boolean }> => {
+    const x = await ask(phase, kind, method, params).answer;
+    return { answer: x.answer, latencyMs: x.latencyMs, failed: x.error || x.cancelled };
+  };
 
   const docs: Doc[] = spec.files.map((path) => ({ path, uri: fileUri(path), text: readText(path), version: 1 }));
   const edited = docs[0]!;
@@ -466,23 +486,29 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
       const perKey: number[] = [];
       const before = usage();
       let key = 0;
+      let failed = 0;
       for (let line = 0; line < spec.pausedLines; line++) {
         for (let i = 0; i < TYPED.length; i++, key++) {
           await sleep(spec.pauseMs);
           const start = performance.now();
           const position = append(edited, TYPED[i]!);
-          for (const [, kind, method, params] of keyRequests(i, key, position)) await ask("paused", kind, method, params, undefined, key).answer;
+          for (const [, kind, method, params] of keyRequests(i, key, position)) {
+            const x = await ask("paused", kind, method, params, undefined, key).answer;
+            if (x.error || x.cancelled) failed++;
+          }
           perKey.push(performance.now() - start);
         }
         removeTail(edited, TYPED.length);
       }
-      metrics["paused.cpuPerKeyMs"] = cpuDelta(before, usage(), key);
-      metrics["paused.keyP50Ms"] = orNull(perKey, median);
+      // A key whose requests failed was cheap for the wrong reason: no figure rather than a fast one.
+      metrics["paused.cpuPerKeyMs"] = failed ? null : cpuDelta(before, usage(), key);
+      metrics["paused.keyP50Ms"] = failed ? null : orNull(perKey, median);
     }
 
     // errfix
     if (spec.errfixes > 0) {
-      const baseline = diagnosticItems((await timed("warmup", "diagnostic", ...diagnostics(edited))).answer).length;
+      const base = await timed("warmup", "diagnostic", ...diagnostics(edited));
+      const baseline = base.failed ? Infinity : diagnosticItems(base.answer).length;
       const shown: number[] = [];
       const cleared: number[] = [];
       let missed = 0;
@@ -490,10 +516,13 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
         const line = errorLine(i);
         append(edited, line);
         const e = await timed("errfix", "diagnostic", ...diagnostics(edited));
-        if (diagnosticItems(e.answer).length <= baseline) missed++;
+        // Shown: one more problem than before; cleared: back to no more than before.
+        if (e.failed || diagnosticItems(e.answer).length <= baseline) missed++;
         shown.push(e.latencyMs);
         removeTail(edited, line.length);
-        cleared.push((await timed("errfix", "diagnostic", ...diagnostics(edited))).latencyMs);
+        const f = await timed("errfix", "diagnostic", ...diagnostics(edited));
+        if (f.failed || diagnosticItems(f.answer).length > baseline) missed++;
+        cleared.push(f.latencyMs);
       }
       counts.errfixMissed = missed;
       // A server that did not show the error answered something else: its times are not comparable.
@@ -503,31 +532,36 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
 
     // imports
     const names = spec.imports > 0 ? importCandidates(edited.text, docs.slice(1).map((d) => d.text), spec.imports) : [];
+    if (spec.imports > 0) counts.importNames = names.length;
     if (names.length) {
       const completions: number[] = [];
       const fixes: number[] = [];
       let missed = 0;
+      let completionMissed = 0;
       for (const name of names) {
         const prefix = `\n${name.slice(0, 3)}`;
         const at = append(edited, prefix);
-        completions.push((await timed("imports", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: at, context: { triggerKind: 1 } })).latencyMs);
+        const c = await timed("imports", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: at, context: { triggerKind: 1 } });
+        // A completion counts when it offered the name (from another file's exports).
+        if (c.failed || !completionLabels(c.answer).includes(name)) completionMissed++;
+        completions.push(c.latencyMs);
         removeTail(edited, prefix.length);
         const named = `\n${name};\n`;
         const line = endPosition(edited.text).line + 1;
         append(edited, named);
         const d = await timed("imports", "diagnostic", ...diagnostics(edited));
-        const found = diagnosticItems(d.answer).filter((x) => x.range?.start?.line === line);
+        const found = d.failed ? [] : diagnosticItems(d.answer).filter((x) => x.range.start.line === line);
         // The fix counts only when an add-import action came back, and its time runs until its edit
         // is in hand: a server that defers the edit to codeAction/resolve pays for the resolve too.
         let fixMs: number | null = null;
         if (found.length) {
           const range = { start: { line, character: 0 }, end: { line, character: name.length } };
           const fix = await timed("imports", "quickFix", "textDocument/codeAction", { textDocument: { uri: edited.uri }, range, context: { diagnostics: found, only: ["quickfix"], triggerKind: 1 } });
-          const action = importAction(fix.answer);
+          const action = fix.failed ? null : importAction(fix.answer);
           if (action?.edit) fixMs = fix.latencyMs;
           else if (action) {
             const resolved = await timed("imports", "quickFixResolve", "codeAction/resolve", action);
-            if ((resolved.answer.result as { edit?: unknown } | null)?.edit) fixMs = fix.latencyMs + resolved.latencyMs;
+            if (!resolved.failed && (resolved.answer.result as { edit?: unknown } | null)?.edit) fixMs = fix.latencyMs + resolved.latencyMs;
           }
         }
         if (fixMs === null) missed++;
@@ -537,7 +571,8 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
       await timed("warmup", "diagnostic", ...diagnostics(edited));
       counts.importNames = names.length;
       counts.importsMissed = missed;
-      metrics["imports.completionMs"] = median(completions);
+      counts.importCompletionsMissed = completionMissed;
+      metrics["imports.completionMs"] = completionMissed === 0 ? median(completions) : null;
       // Only when every name got its fix: a median over fewer names than the other side's would
       // compare different work.
       metrics["imports.quickFixMs"] = missed === 0 ? median(fixes) : null;
@@ -547,20 +582,25 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
     if (spec.longEdits > 0) {
       const lat: number[] = [];
       const memory: [number, number][] = [];
+      let failed = 0;
       // A character added, then removed: every other edit checks the same content, so a slowdown or
       // growth over the phase is the server's, not a file that grows.
       for (let i = 0; i < spec.longEdits; i++) {
         if (i % 2) removeTail(edited, 1);
         else append(edited, "x");
-        if (i % 4 === 1) await timed("long", "hover", ...hover);
-        if (i % 4 === 2) await timed("long", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: endPosition(edited.text), context: { triggerKind: 1 } });
-        lat.push((await timed("long", "diagnostic", ...diagnostics(edited))).latencyMs);
+        if (i % 4 === 1 && (await timed("long", "hover", ...hover)).failed) failed++;
+        if (i % 4 === 2 && (await timed("long", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: endPosition(edited.text), context: { triggerKind: 1 } })).failed) failed++;
+        const d = await timed("long", "diagnostic", ...diagnostics(edited));
+        if (d.failed) failed++;
+        lat.push(d.latencyMs);
         const u = usage();
         if (u) memory.push([i, u.residentBytes]);
       }
       if (spec.longEdits % 2) removeTail(edited, 1);
       await timed("warmup", "diagnostic", ...diagnostics(edited));
-      metrics["long.diagnosticP50Ms"] = median(lat);
+      // Failed answers are cheap for the wrong reason: no figures rather than flattering ones.
+      if (failed) lat.length = memory.length = 0;
+      metrics["long.diagnosticP50Ms"] = orNull(lat, median);
       const q = Math.floor(lat.length / 4);
       if (q >= 2) metrics["long.latencyDrift"] = median(lat.slice(-q)) / median(lat.slice(0, q));
       const settled = memory.slice(Math.floor(memory.length / 4));

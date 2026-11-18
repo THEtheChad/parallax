@@ -169,7 +169,7 @@ same profile and binary under a second label (`<label>.aa`), in both thread mode
 
 The result goes to `calibration.json` in the bundle and, when the A/A bench was measured cleanly, to
 the config directory (`~/.config/parallax/calibration/<kind>.json`, one per kind). Each later bench on
-the same host setup (OS, kernel, CPU model, core count, pinning) records the calibration it found
+the same host setup (OS, kernel, CPU model, core count, pinning, the cores the harness may use) records the calibration it found
 and warns when, at its first look, a floor is wider than its "same" (the resolution, widened to
 `--resolution-ms` over the reference's time as its calls are), or when the calibration had more
 false calls than chance explains. Calibrate again after changing the machine's setup, and expect a
@@ -245,8 +245,8 @@ cost model rather than time, so they are no basis for comparing implementations.
   again: the time to show an error and to clear it. A server that misses an inserted error is
   counted in the summary and gets no errfix figures for that session.
 - **imports:** `--imports` (3) names exported by the other open files and not yet used in the
-  edited one. The first three letters typed and a completion asked (it must search other files'
-  exports), then the whole name typed: its "cannot find name" diagnostic and the quick fix for it
+  edited one (the bundle notes when fewer are found). The first three letters typed and a completion
+  asked, which must offer the name (it searches other files' exports), then the whole name typed: its "cannot find name" diagnostic and the quick fix for it
   (the add-import fix), timed until the fix's edit is in hand: through `codeAction/resolve` when the
   server defers it. Names without a missing-name diagnostic or an add-import action are counted, and
   the fix's figure is left out of a session that missed any.
@@ -257,6 +257,10 @@ cost model rather than time, so they are no basis for comparing implementations.
   as a session goes on), and memory growth per edit, a Theil-Sen slope over the last three quarters
   (robust to a stray garbage collection). Growth and drift are never compared by ratio: a ratio of
   two slopes near zero means nothing.
+
+In these four phases an answer that is an error (a method the server does not support) or a
+cancellation is cheap for the wrong reason: a session with one gets no figure for that metric rather
+than a flattering one, and the errors are counted.
 
 Every compared metric must settle before a sequential `lsp-bench` stops, and each comparison has its
 own false-call budget, so the more metrics, the more often a bench runs to `--max-runs` and the more

@@ -25,10 +25,10 @@ import { DEFAULT_IDLE_GATE, hostLoad, priorityNote, type HostLoad, type IdleGate
 import { machineStateNotes } from "../host/machineState.ts";
 import { memoryKind, usageBackend } from "../host/serverUsage.ts";
 import { bindSide, sidesInModes, THREAD_MODES, type Side, type ThreadMode } from "../profile/profile.ts";
-import { pickFiles, rel } from "../session/picker.ts";
+import { pickFiles, readText, rel } from "../session/picker.ts";
 import { TYPED } from "../session/script.ts";
 import { CANARY_SIZE, CANARY_VERSION } from "../timing/canary.ts";
-import { DEBOUNCE_MS, HOVER_EVERY, LSP_SESSION_ID, runLspTiming, type LspTimingSpec } from "../timing/lspSession.ts";
+import { DEBOUNCE_MS, HOVER_EVERY, importCandidates, LSP_SESSION_ID, runLspTiming, type LspTimingSpec } from "../timing/lspSession.ts";
 import { summarizeLspBench, type LspBenchSummary, type SessionRecord } from "../timing/lspSummary.ts";
 import { runRounds, settledAtLook } from "../timing/rounds.ts";
 import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
@@ -185,6 +185,15 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     bundle.notes.push(note);
     opts.log(`warning: ${note}`);
   };
+  if (settings.imports! > 0) {
+    const names = importCandidates(readText(files[0]!), files.slice(1).map(readText), settings.imports!);
+    if (names.length < settings.imports!)
+      warn(
+        names.length
+          ? `the imports phase found ${names.length} of ${settings.imports} names (the other files export few declarations not already used in the edited file)`
+          : "the imports phase has nothing to ask: the other files export no declarations the edited file does not already use",
+      );
+  }
   const calibration = checkCalibration(loadCalibration("lsp-bench"), hostKey(host, settings.pin?.cpus ?? null), {
     resolution: settings.resolution,
     resolutionMs: settings.resolutionMs,

@@ -9,6 +9,8 @@
 //                             like a single-threaded server; $/cancelRequest drops a queued request
 //                             (answered with RequestCancelled)
 //   FAKE_EDIT_WORK_MS=<ms>    the first request after a didChange costs this much more (the update)
+//   FAKE_DEFER_EDITS=1        add-import actions come without their edit (codeAction/resolve gives it)
+//   FAKE_NO_CODE_ACTIONS=1    codeAction is answered with a method-not-found error
 
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,11 +69,15 @@ function answer(method: string, params: Record<string, any>): unknown {
       const huge = env.FAKE_HUGE !== undefined && ++completions === 1;
       const n = huge ? Number(env.FAKE_HUGE) : 5;
       // Emitted in an order that depends on the run, as servers do with equal sort keys.
-      const items = Array.from({ length: n }, (_, i) => ({ label: `item${i}`, sortText: "11", detail: "x".repeat(huge ? 200 : 1) }));
+      const items: { label: string; sortText: string; detail: string }[] = Array.from({ length: n }, (_, i) => ({ label: `item${i}`, sortText: "11", detail: "x".repeat(huge ? 200 : 1) }));
+      // Auto-import style: every name another open file exports (only when asked from an edited file).
+      if (docs.size && !huge)
+        for (const [other, text] of docs) if (other !== uri) for (const m of text.matchAll(/^export\s+(?:const|interface|function|class|type)\s+(\w+)/gm)) items.push({ label: m[1]!, sortText: "15", detail: "auto-import" });
       if (Math.random() < 0.5) items.reverse();
       return { isIncomplete: false, items };
     }
     case "textDocument/codeAction":
+      // FAKE_NO_CODE_ACTIONS=1: the method is not supported (answered as an error, see respond).
       if (!params?.context?.diagnostics?.length) return [];
       // FAKE_DEFER_EDITS=1: the edit comes from codeAction/resolve, as some servers do.
       if (env.FAKE_DEFER_EDITS) return [{ title: "Add import from \"./b\"", kind: "quickfix", diagnostics: params.context.diagnostics, data: { uri } }];
@@ -100,6 +106,10 @@ function respond(id: number, method: string, params: any): void {
     process.exit(70);
   }
   answered++;
+  if (env.FAKE_NO_CODE_ACTIONS && method === "textDocument/codeAction") {
+    send({ id, error: { code: -32601, message: "Unhandled method textDocument/codeAction" } });
+    return;
+  }
   send({ id, result: answer(method, params) });
 }
 

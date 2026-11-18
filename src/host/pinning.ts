@@ -9,7 +9,6 @@
 
 import { spawnSync } from "node:child_process";
 import { platform } from "node:os";
-import { countCpuList } from "./machineState.ts";
 
 export interface Pinning {
   // Kernel cpu list ("2-5", "0,2,4,6").
@@ -47,7 +46,7 @@ export function parsePinning(list: string, allowed: string | null, os: NodeJS.Pl
   }
   const probe = spawnSync("taskset", ["-c", list, "true"], { encoding: "utf8", timeout: 10_000 });
   if (probe.error || probe.status !== 0) throw new Error(`--pin: taskset did not work here (${probe.error?.message ?? probe.stderr.trim()})`);
-  return { cpus: list, cores: countCpuList(list) };
+  return { cpus: list, cores: cpus.length };
 }
 
 export const pinCommand = (command: string[], pin: Pinning | null): string[] => (pin ? ["taskset", "-c", pin.cpus, ...command] : command);

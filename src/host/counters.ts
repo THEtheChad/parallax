@@ -111,7 +111,8 @@ const eventName = (e: string): string => e.replace(/:[ukh]+$/, "");
 // (software events ride along with the first).
 export function planGroups(working: string[], together: PerfStat | null, forceSplit = false): string[][] {
   if (!working.length) return [];
-  const ok = together !== null && !together.missing.length && !together.scaled.length;
+  // Together works when every working event came back with a value.
+  const ok = together !== null && working.every((e) => together.counters[FIELD[eventName(e)]!] !== null);
   if (ok && !forceSplit) return [working];
   const hw = working.filter((e) => HARDWARE.has(e));
   const sw = working.filter((e) => !HARDWARE.has(e));
@@ -129,7 +130,8 @@ export function counterPlan(): CounterPlan {
   if (forced === "none") return (cached = none);
   if (platform() !== "linux" && forced !== "perf" && forced !== "split") return (cached = none);
   const alone = EVENTS.map((e) => ({ e, r: probe([e]) }));
-  const working = alone.filter(({ e, r }) => r !== null && !r.missing.includes(eventName(e))).map(({ e }) => e);
+  // Working: counted alone, whole (not scaled), with a value.
+  const working = alone.filter(({ e, r }) => r !== null && r.counters[FIELD[eventName(e)]!] !== null).map(({ e }) => e);
   // Instructions are what counters are for: without them the backend is not worth its runs.
   if (!working.includes("instructions:u")) return (cached = none);
   const groups = planGroups(working, probe(working), forced === "split");
