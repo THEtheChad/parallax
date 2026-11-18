@@ -190,7 +190,7 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     sides,
     runs: settings.runs,
     maxRuns: settings.maxRuns,
-    stop: () => settledAtLook(summarize(bundle, writer.records as Records), settings, opts.log),
+    stop: () => settledAtLook(summarizeBenchRecords(bundle, writer.records as Records), settings, opts.log),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -232,9 +232,11 @@ export function readBenchBundle(dir: string): BenchBundle {
   return b;
 }
 
-type Records = (SampleRecord | RoundRecord | CounterRecord)[];
+export type Records = (SampleRecord | RoundRecord | CounterRecord)[];
 
-function summarize(bundle: BenchBundle, records: Records, gates: Gates = bundle.settings.gates): BenchSummary {
+// The summary of a bundle from its records (a pure function: `bench-summary` and published results
+// recompute it).
+export function summarizeBenchRecords(bundle: BenchBundle, records: Records, gates: Gates = bundle.settings.gates): BenchSummary {
   const st = bundle.settings;
   return summarizeBench({
     records,
@@ -255,7 +257,7 @@ export function summarizeBenchBundle(dir: string, bundle: BenchBundle, gates: Ga
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l) as SampleRecord | RoundRecord | CounterRecord);
-  const summary = summarize(bundle, records, gates);
+  const summary = summarizeBenchRecords(bundle, records, gates);
   writeJsonAtomic(join(dir, "summary.json"), summary);
   return summary;
 }
