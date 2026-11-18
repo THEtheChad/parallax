@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { platform } from "node:os";
-import { readHwm, readStat, ticksPerSecond } from "./procGroup.ts";
+import { readHwm, readRss, readStat, ticksPerSecond } from "./procGroup.ts";
 
 export type UsageBackend = "proc" | "ps" | "none";
 
@@ -24,12 +24,15 @@ export interface ServerUsage {
   cpuMs: number;
   // proc: peak resident size so far; ps: resident size now.
   memoryBytes: number;
+  // Resident size now, summed over the group (for growth over a session; peaks never shrink).
+  residentBytes: number;
   members: number;
 }
 
 function procUsage(pgid: number): ServerUsage | null {
   let ticks = 0;
   let hwm = 0;
+  let rss = 0;
   let members = 0;
   let entries: string[];
   try {
@@ -44,8 +47,9 @@ function procUsage(pgid: number): ServerUsage | null {
     members++;
     ticks += st.ticks;
     hwm = Math.max(hwm, readHwm(d));
+    rss += readRss(d);
   }
-  return members ? { cpuMs: (ticks / ticksPerSecond()) * 1000, memoryBytes: hwm, members } : null;
+  return members ? { cpuMs: (ticks / ticksPerSecond()) * 1000, memoryBytes: hwm, residentBytes: rss, members } : null;
 }
 
 // "[[dd-]hh:]mm:ss[.ff]" (BSD and procps both use subsets of this) to milliseconds.
@@ -70,7 +74,7 @@ export function parsePsGroup(output: string, pgid: number): ServerUsage | null {
     cpuMs += ms;
     rss += Number(kb) * 1024 || 0;
   }
-  return members ? { cpuMs, memoryBytes: rss, members } : null;
+  return members ? { cpuMs, memoryBytes: rss, residentBytes: rss, members } : null;
 }
 
 function psUsage(pgid: number): ServerUsage | null {

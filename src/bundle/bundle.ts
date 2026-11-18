@@ -26,7 +26,8 @@ export interface SideRecord {
   binSha256: string;
   version: string | null;
   lspCommand: string[];
-  env: { cleared: string[]; set: Record<string, string> };
+  // mode, passed and fixed: absent in bundles from before sealed environments (inherited).
+  env: { mode?: "sealed" | "inherit"; passed?: string[]; fixed?: Record<string, string>; cleared: string[]; set: Record<string, string> };
   lib: { uriPrefix?: string; dir?: string } | null;
   processModel: string;
   knownGaps: string[];
@@ -190,7 +191,7 @@ export function sideRecord(s: Side): SideRecord {
     binSha256: s.binSha256,
     version: s.version,
     lspCommand: s.lspCommand,
-    env: { cleared: s.env.cleared, set: s.env.set },
+    env: { mode: s.env.mode ?? "inherit", passed: s.env.passed ?? [], fixed: s.env.fixed ?? {}, cleared: s.env.cleared, set: s.env.set },
     lib: s.lib ?? null,
     processModel: s.profile.processModel ?? "single",
     knownGaps: s.profile.knownGaps ?? [],

@@ -24,6 +24,10 @@ named with it is where.
    pressure) is optional, detected by trying it, and recorded as present or absent.
 7. **Spend runs where they are needed.** A bench stops as soon as every call is settled and goes on
    only while some call is not.
+8. **Know the noise floor.** A machine's own noise sets the smallest difference it can resolve. An
+   A/A bench (a binary against itself) measures it, and a bench asked for less is warned.
+9. **Give every side the same world.** Commands start from a sealed environment, not from whatever
+   the shell exported; what they were given is recorded.
 
 ## A round
 
@@ -114,6 +118,61 @@ which it is facing and spends rounds accordingly.
 **Noisy and failed.** A candidate with fewer than `--min-runs` (3) accepted rounds is `noisy`, with
 no figure. One whose run crashed, was killed or timed out (its own or the reference's) is `failed`.
 
+## The environment
+
+A variable an implementation reads changes what it does: `GOGC`, `GOMAXPROCS`, `RAYON_NUM_THREADS`,
+`NODE_OPTIONS`, a locale. Inherited from the shell that started the harness, such a variable would
+change a result and nothing in the bundle would show it. So every measured command (check commands,
+counted runs, language servers, and `lsp-diff`'s servers) starts from a sealed environment
+(`src/host/sealedEnv.ts`, `--env sealed`, the default):
+
+- from the harness's environment, only what a program needs to start and find its files: `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `TMPDIR` (on Windows: `PATH`, `PATHEXT`, `SystemRoot`, `TEMP`,
+  `USERPROFILE`, `APPDATA` and the other names Windows programs expect), and any `--pass-env NAME`;
+- fixed values: `LANG=C.UTF-8`, `LC_ALL=C.UTF-8`, `TZ=UTC`;
+- then the profile's `env.set` and the thread mode's variables.
+
+Each side's record in the bundle lists the names passed (never their values: `PATH` and `HOME` are
+paths), the fixed values, and what the profile cleared and set. `--env inherit` passes the whole
+environment, minus the profile's `env.clear` patterns, as before.
+
+## Pinning
+
+`--pin <cpu-list>` (Linux; `src/host/pinning.ts`) runs every measured command and server under
+`taskset -c <list>`: every side, every mode, the counted runs. The list must be cores the harness
+may run on. Pinning is off by default, because the scheduler's own placement is what users get, and
+a pinned default-mode run has fewer cores than the machine. Pin when placement itself is the noise:
+a hybrid CPU whose performance and efficiency cores differ, or cores that interrupts or other work
+favour. The list is recorded in the bundle's settings, and a calibration is valid only for the same
+pinning.
+
+## A/A calibration
+
+`parallax calibrate --kind bench|lsp-bench --side <profile>=<bin> --project <dir> --out <dir>`
+(`src/commands/calibrate.ts`, `src/timing/calibration.ts`) benches one binary against itself: the
+same profile and binary under a second label (`<label>.aa`), in both thread modes, for a fixed
+`--runs` (9) rounds. Nothing differs, so anything the bench finds is noise:
+
+- **noise floor**, per metric and mode: the half-width of the A/A ratio interval, max(1 - low,
+  high - 1). At that many rounds, a difference smaller than this cannot be told from noise, so a
+  `--resolution` below it asks for "same" calls this machine cannot give. For instruction counts,
+  the two sides' difference or half either side's spread.
+- **smallest resolution**: the floor rounded up to the next half percent, at least 1%.
+- **false calls**: an A/A comparison called faster or slower. The machine (or the gates) let noise
+  through as a difference; no resolution fixes that.
+
+The result goes to `calibration.json` in the bundle and, when the A/A bench was measured cleanly, to
+the config directory (`~/.config/parallax/calibration/<kind>.json`, one per kind). Each later bench on
+the same host setup (OS, kernel, CPU model, core count, pinning) records the calibration it found
+and warns when its resolution is below a floor of a metric and mode it runs, or when the calibration
+made a false call. A bench that looks first at fewer rounds than the calibration has a higher floor
+still; the warning says so. Calibrate again after changing the machine's setup, and expect a floor to
+differ by workload: a 200 ms check on a quiet machine has a lower relative floor than a 20 ms one.
+
+Theo Browne's tsc-rs tooling (`scripts/goport/perf.sh`) sets its pass bars the same way, from A/A
+runs on each host: 1% for single-threaded instructions, 5% for memory, 2% for wall time on a
+dedicated quiet machine.
+
 ## Counters
 
 Where `perf stat` works (Linux; `src/host/counters.ts`), `bench` runs each side `--counter-runs` (3)
@@ -134,10 +193,18 @@ What the counters are for:
 - **Not with threads or a GC.** tsc 7 varies by 3-9% even in instructions: Go's garbage collector
   and scheduler run on their own timing.
 
+Counters are checked before they are trusted. Each event is first counted alone on a trivial
+command; one that is not supported or reads 0 (some VMs expose a counter that never counts) is left
+out and named in the bundle's notes. Then the working events are counted together; if one stops
+counting or is multiplexed there (a Zen 5 guest counts only the first hardware event of a set),
+each hardware event gets a counted run of its own. The plan (`host.counterPlan`: event groups and
+unavailable events) is in the bundle, and every counted run still drops a zero or a scaled count
+rather than report it.
+
 Without root, `kernel.perf_event_paranoid` 2 allows user-space events only, so kernel-side events
 (context switches, migrations) are not counted. In a VM the hypervisor must expose the CPU's
-counters (WSL2 does). `PARALLAX_PERF` names the perf program and `PARALLAX_COUNTERS=none|perf`
-forces a backend. macOS needs root for its counters and Windows has no ordinary way, so neither has
+counters (WSL2 does). `PARALLAX_PERF` names the perf program and `PARALLAX_COUNTERS=none|perf|split`
+forces a backend (`split`: one run per hardware event). macOS needs root for its counters and Windows has no ordinary way, so neither has
 a backend.
 
 Fully deterministic tools exist (Cachegrind, which CodSpeed builds on, simulates the CPU and runs
@@ -162,6 +229,25 @@ cost model rather than time, so they are no basis for comparing implementations.
   what is left is the server's own time per request, which varies far less between runs. The first
   request after a key carries the server's update, as in the edit phase.
 
+- **paused:** `--paused-lines` (1) lines typed as in service, with `--pause-ms` (300) of quiet
+  before each key. Some servers start background work once the editor goes quiet (tsc-rs warms its
+  auto-import data after 50 ms of quiet); the next key then waits on it, and its CPU shows per key.
+  Typing at full speed never shows this.
+- **errfix:** `--errfixes` (5) times, a line with a type error added to the edited file and its
+  diagnostics (which must report one more problem; a server that does not is counted in the
+  summary), then the line removed and the diagnostics again: the time to show an error and to clear
+  it.
+- **imports:** `--imports` (3) names exported by the other open files and not yet used in the
+  edited one. The first three letters typed and a completion asked (it must search other files'
+  exports), then the whole name typed: its "cannot find name" diagnostic and the quick fix for it
+  (the add-import fix). Names whose diagnostic was not found are counted.
+- **long:** `--long-edits` (60) edits in a row, each followed by the edited file's diagnostics (a
+  hover or a completion every few edits), with resident memory read after each. Reported per server:
+  diagnostics p50, the last quarter's diagnostics over the first quarter's (a server that slows down
+  as a session goes on), and memory growth per edit, a Theil-Sen slope over the last three quarters
+  (robust to a stray garbage collection). Growth and drift are never compared by ratio: a ratio of
+  two slopes near zero means nothing.
+
 The harness records how late it sent keys; when that is more than a quarter of the interval, the
 client machine was too busy and the bundle says so.
 
@@ -174,7 +260,10 @@ client machine was too busy and the bundle says so.
 | server CPU and memory (`lsp-bench`) | `/proc`, peak memory | `ps`, memory at the end of the session | none |
 | outside load gate | yes | yes | no (needs the commands' CPU) |
 | CPU pressure | `/proc/pressure/cpu` | no | no |
-| counters | `perf stat` | no | no |
+| counters | `perf stat`, each event checked | no | no |
+| sealed environment | yes | yes | yes |
+| pinning (`--pin`) | `taskset` | no | no |
+| memory growth per edit | `/proc` (resident) | `ps` (resident) | no |
 | recorded machine state | governors, boost, SMT, affinity, mains power | power source, Low Power Mode | power plan |
 
 Each optional backend is chosen by trying it on a trivial command, never by OS name alone, and can
@@ -192,6 +281,8 @@ plan, or fewer cores available than the machine has.
 ## Running a good bench
 
 - Plug in a laptop; turn Low Power Mode off; close what you can.
+- Calibrate once per machine setup (`parallax calibrate`), on a project like the ones you bench,
+  and set `--resolution` no lower than the floor it reports.
 - Keep the project on the machine's own disk. From WSL, a project under `/mnt/c` is read through a
   slow file share (a check that takes 230 ms on Windows took 2 s), so the bench times the share.
 - Run at normal priority. A batch slice or `nice` makes every other program win the CPU; the bundle

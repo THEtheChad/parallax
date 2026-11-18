@@ -10,9 +10,10 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, platform, tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { configDir } from "../host/config.ts";
 import { harnessInfo, type CorpusInfo, type HostInfo, type SideRecord } from "../bundle/bundle.ts";
 import { loadSuite, suiteProjectFor } from "../suite/suite.ts";
 import { readBenchBundle, summarizeBenchRecords, type BenchBundle, type Records as BenchRecords } from "./bench.ts";
@@ -44,12 +45,6 @@ export interface PublishedResult {
   finishedAt: string | null;
   records: unknown[];
   summary: unknown;
-}
-
-function configDir(): string {
-  if (platform() === "win32") return join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "parallax");
-  if (platform() === "darwin") return join(homedir(), "Library", "Application Support", "parallax");
-  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "parallax");
 }
 
 // A random id for this machine, made once and kept in the config directory.

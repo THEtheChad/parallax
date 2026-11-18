@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { baseEnv, DEFAULT_ENV_POLICY, type BaseEnv, type EnvMode, type EnvPolicy } from "../host/sealedEnv.ts";
 
 export const PROFILE_SCHEMA = "parallax.profile/1";
 
@@ -133,14 +134,21 @@ const globToRegExp = (glob: string): RegExp =>
 
 export interface ResolvedEnv {
   env: NodeJS.ProcessEnv;
+  // How the environment started (host/sealedEnv.ts); absent: inherited (bundles from before sealing).
+  mode?: EnvMode;
+  // Sealed: names passed from the harness's environment (values never recorded), and the fixed ones.
+  passed?: string[];
+  fixed?: Record<string, string>;
   // Names removed because a clear pattern matched them (values are never recorded).
   cleared: string[];
   // Names set by the profile or the side (values recorded: they are configuration).
   set: Record<string, string>;
 }
 
-export function resolveEnv(profile: Profile, base: NodeJS.ProcessEnv, extra: Record<string, string> = {}): ResolvedEnv {
-  const env = { ...base };
+// A plain environment is taken whole (inherit).
+export function resolveEnv(profile: Profile, base: BaseEnv | NodeJS.ProcessEnv, extra: Record<string, string> = {}): ResolvedEnv {
+  const b: BaseEnv = isBaseEnv(base) ? base : { env: base, mode: "inherit", passed: [], fixed: {} };
+  const env = { ...b.env };
   const patterns = (profile.env?.clear ?? []).map(globToRegExp);
   const cleared = Object.keys(env)
     .filter((k) => patterns.some((re) => re.test(k)))
@@ -148,8 +156,11 @@ export function resolveEnv(profile: Profile, base: NodeJS.ProcessEnv, extra: Rec
   for (const k of cleared) delete env[k];
   const set = { ...(profile.env?.set ?? {}), ...extra };
   Object.assign(env, set);
-  return { env, cleared, set };
+  return { env, mode: b.mode, passed: b.passed, fixed: b.fixed, cleared, set };
 }
+
+const isBaseEnv = (v: BaseEnv | NodeJS.ProcessEnv): v is BaseEnv =>
+  typeof (v as BaseEnv).mode === "string" && typeof (v as BaseEnv).env === "object" && Array.isArray((v as BaseEnv).passed);
 
 export async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
@@ -178,6 +189,8 @@ export interface Side {
   mode: ThreadMode;
   // The side's label without the thread-mode suffix.
   base: string;
+  // How the side's environment was built, kept so a thread-mode variant builds its own the same way.
+  envPolicy: EnvPolicy;
 }
 
 // Every side in every mode: all sides in the first mode, then all in the next, so a round runs one
@@ -210,12 +223,19 @@ export function withThreads(side: Side, mode: ThreadMode, use: "check" | "lsp"):
     base: side.label,
     lspCommand: use === "lsp" ? [...side.lspCommand, ...(t.args ?? [])] : side.lspCommand,
     checkArgs: use === "check" ? [...(t.args ?? [])] : [],
-    env: resolveEnv(side.profile, process.env, { ...side.env.set, ...(t.env ?? {}) }),
+    env: resolveEnv(side.profile, baseEnv(side.envPolicy), { ...side.env.set, ...(t.env ?? {}) }),
   };
 }
 
+export interface BindOptions {
+  extraEnv?: Record<string, string>;
+  // Sealed by default (host/sealedEnv.ts).
+  env?: EnvPolicy;
+}
+
 // Binds `profile=bin` (or `label:profile=bin`) into a side. The label defaults to the profile name.
-export async function bindSide(spec: string, role: Role, extraEnv: Record<string, string> = {}): Promise<Side> {
+export async function bindSide(spec: string, role: Role, opts: BindOptions = {}): Promise<Side> {
+  const envPolicy = opts.env ?? DEFAULT_ENV_POLICY;
   const eq = spec.indexOf("=");
   if (eq < 1) throw new Error(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
   const left = spec.slice(0, eq);
@@ -228,7 +248,7 @@ export async function bindSide(spec: string, role: Role, extraEnv: Record<string
   if (!existsSync(bin)) throw new Error(`side ${JSON.stringify(spec)}: no binary at ${bin}`);
   const binReal = realpathSync(bin);
   const vars: Vars = { bin: isAbsolute(bin) ? bin : resolve(bin), binDir: dirname(binReal) };
-  const env = resolveEnv(profile, process.env, extraEnv);
+  const env = resolveEnv(profile, baseEnv(envPolicy), opts.extraEnv ?? {});
   const version = probeVersion(profile, vars, env.env);
   const lib = profile.libraryFiles && {
     ...(profile.libraryFiles.uriPrefix !== undefined ? { uriPrefix: expand(profile.libraryFiles.uriPrefix, vars) } : {}),
@@ -251,6 +271,7 @@ export async function bindSide(spec: string, role: Role, extraEnv: Record<string
     lib,
     mode: "default",
     base: label ?? profile.name,
+    envPolicy,
   };
 }
 

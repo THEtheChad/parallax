@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import { bench, readBenchBundle, summarizeBenchBundle } from "../src/commands/bench.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// No stored calibration from this machine leaks into the bundles under test.
+process.env.PARALLAX_CONFIG_DIR = mkdtempSync(join(tmpdir(), "parallax-config-"));
 const fake = join(here, "fixtures/fake-check.ts");
 const side = (name: string, label?: string): string => `${label ? `${label}:` : ""}${join(here, "fixtures/profiles", `${name}.json`)}=${fake}`;
 const quiet = (): void => {};

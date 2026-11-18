@@ -34,6 +34,9 @@ import { runRounds, settledAtLook } from "../timing/rounds.ts";
 import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
 import { DEFAULT_GATES, type Gates, type RoundRecord } from "../timing/summary.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
+import { parsePinning, type Pinning } from "../host/pinning.ts";
+import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
+import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
 
 export interface LspBenchSettings {
   // Thread modes each server runs in (absent in bundles from before modes: default only).
@@ -43,6 +46,12 @@ export interface LspBenchSettings {
   intervalMs: number;
   lines: number;
   serviceLines: number;
+  // The paused, errfix, imports and long phases (timing/lspSession.ts; absent in older bundles: not run).
+  pausedLines?: number;
+  pauseMs?: number;
+  errfixes?: number;
+  imports?: number;
+  longEdits?: number;
   // Rounds before the first look, and the most rounds a bench runs while some call is unsettled
   // (stats.ts lookPoints; absent in bundles from before sequential rounds: runs).
   runs: number;
@@ -56,6 +65,10 @@ export interface LspBenchSettings {
   requestTimeoutMs: number;
   idle: IdleGate;
   gates: Gates;
+  // How each server's environment is built (host/sealedEnv.ts; absent in older bundles: inherited).
+  env?: EnvPolicy;
+  // Cores every server is pinned to (host/pinning.ts); null: not pinned.
+  pin?: Pinning | null;
 }
 
 export interface LspBenchBundle {
@@ -65,7 +78,7 @@ export interface LspBenchBundle {
   createdAt: string;
   finishedAt: string | null;
   harness: ReturnType<typeof harnessInfo>;
-  host: HostInfo & { load: HostLoad; usage: string; memory: "peak" | "current" | null };
+  host: HostInfo & { load: HostLoad; usage: string; memory: "peak" | "current" | null; calibration?: CalibrationRef | null };
   corpus: CorpusInfo;
   settings: LspBenchSettings;
   session: { id: string; files: string[]; typed: string; debounceMs: number; hoverEvery: number };
@@ -74,7 +87,9 @@ export interface LspBenchBundle {
   notes: string[];
 }
 
-export interface LspBenchOptions extends Partial<Omit<LspBenchSettings, "idle" | "gates">> {
+export interface LspBenchOptions extends Partial<Omit<LspBenchSettings, "idle" | "gates" | "pin">> {
+  // A kernel cpu list ("2-5") to pin every server to.
+  pin?: string;
   project: string;
   out: string;
   ref: string;
@@ -103,6 +118,11 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     intervalMs: opts.intervalMs ?? 120,
     lines: opts.lines ?? 4,
     serviceLines: opts.serviceLines ?? 1,
+    pausedLines: opts.pausedLines ?? 1,
+    pauseMs: opts.pauseMs ?? 300,
+    errfixes: opts.errfixes ?? 5,
+    imports: opts.imports ?? 3,
+    longEdits: opts.longEdits ?? 60,
     runs: opts.runs ?? 6,
     maxRuns: opts.maxRuns ?? Math.max(15, opts.runs ?? 6),
     minRounds: opts.minRounds ?? 3,
@@ -113,19 +133,37 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     requestTimeoutMs: opts.requestTimeoutMs ?? 120_000,
     idle: { ...DEFAULT_IDLE_GATE, ...opts.idle },
     gates: offIfUnlimited({ ...DEFAULT_GATES, ...opts.gates }),
+    env: opts.env ?? DEFAULT_ENV_POLICY,
+    pin: null,
   };
+  const host = hostInfo();
+  if (opts.pin !== undefined) settings.pin = parsePinning(opts.pin, host.state.affinity?.list ?? null);
   if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
   if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
   if (!(settings.intervalMs > 0)) throw new Error("--interval-ms must be more than 0");
-  const bound: Side[] = [await bindSide(opts.ref, "ref")];
-  for (const c of opts.cands) bound.push(await bindSide(c, "cand"));
+  const bound: Side[] = [await bindSide(opts.ref, "ref", { env: settings.env! })];
+  for (const c of opts.cands) bound.push(await bindSide(c, "cand", { env: settings.env! }));
   const sides = sidesInModes(bound, settings.threads, "lsp");
   const labels = sides.map((s) => s.label);
   if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
 
   const files = pickFiles(root, settings.files, opts.file);
   if (!files.length) throw new Error(`no TypeScript files found in ${root}`);
-  const spec: LspTimingSpec = { root, files, edits: settings.edits, intervalMs: settings.intervalMs, lines: settings.lines, serviceLines: settings.serviceLines, requestTimeoutMs: settings.requestTimeoutMs };
+  const spec: LspTimingSpec = {
+    root,
+    files,
+    edits: settings.edits,
+    intervalMs: settings.intervalMs,
+    lines: settings.lines,
+    serviceLines: settings.serviceLines,
+    pausedLines: settings.pausedLines!,
+    pauseMs: settings.pauseMs!,
+    errfixes: settings.errfixes!,
+    imports: settings.imports!,
+    longEdits: settings.longEdits!,
+    pin: settings.pin ?? null,
+    requestTimeoutMs: settings.requestTimeoutMs,
+  };
   const dir = prepareBundleDir(opts.out);
   const usage = usageBackend();
   const bundle: LspBenchBundle = {
@@ -135,7 +173,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     createdAt: new Date().toISOString(),
     finishedAt: null,
     harness: harnessInfo(),
-    host: { ...hostInfo(), load: hostLoad(), usage, memory: memoryKind(usage) },
+    host: { ...host, load: hostLoad(), usage, memory: memoryKind(usage) },
     corpus: corpusInfo(root),
     settings,
     session: { id: LSP_SESSION_ID, files: files.map((f) => rel(root, f)), typed: TYPED, debounceMs: DEBOUNCE_MS, hoverEvery: HOVER_EVERY },
@@ -147,13 +185,20 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     bundle.notes.push(note);
     opts.log(`warning: ${note}`);
   };
+  const calibration = checkCalibration(loadCalibration("lsp-bench"), hostKey(host, settings.pin?.cpus ?? null), {
+    resolution: settings.resolution,
+    runs: settings.runs,
+    modes: settings.threads,
+  });
+  bundle.host.calibration = calibration.ref;
+  for (const note of calibration.notes) warn(note);
   if (usage === "none") warn("no way to read a running server's CPU and memory on this machine: those figures and outside load are blank");
   for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state)]) if (note) warn(note);
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root))
     warn("the project is on the Windows disk, read from WSL through a slow file share: times include the share");
   const save = (): void => writeJsonAtomic(join(dir, "bundle.json"), bundle);
   save();
-  opts.log(`bundle ${dir}\nproject ${root}; files: ${bundle.session.files.join(", ")} (editing ${bundle.session.files[0]}); server usage ${usage}`);
+  opts.log(`bundle ${dir}\nproject ${root}; files: ${bundle.session.files.join(", ")} (editing ${bundle.session.files[0]}); server usage ${usage}; environment ${settings.env!.mode}${settings.pin ? `; pinned to cores ${settings.pin.cpus}` : ""}`);
 
   const writer = new KeepingJsonlWriter(join(dir, "samples.jsonl"));
   const session = async (side: Side, round: number, attempt: number, warmup: boolean): Promise<SessionRecord> => {

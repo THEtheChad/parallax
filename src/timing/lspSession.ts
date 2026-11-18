@@ -19,6 +19,21 @@
 //           under load. The first request after a key carries the server's update, as in the edit
 //           phase. Time per key (all of its requests answered), per completion and per diagnostics
 //           request; server CPU per key.
+//   paused  the service phase with `pauseMs` of quiet before each key, `pausedLines` lines: a server
+//           that starts background work once the editor goes quiet (auto-import indexing, a full
+//           check) shows it here, as the next key waiting on that work and as CPU per key
+//   errfix  `errfixes` times: a line with a type error added to the edited file, its diagnostics
+//           (which must report one more problem), the line removed, its diagnostics again. The time
+//           to show an error and to clear it.
+//   imports `imports` names exported by the other open files and not yet used in the edited file:
+//           the first letters typed (completion, which must search other files' exports), then the
+//           whole name (diagnostics report it missing) and the quick fix for it (the add-import fix)
+//   long    `longEdits` edits in a row, each followed by the edited file's diagnostics (a hover or a
+//           completion every few edits), resident memory read after each: diagnostics p50, how much
+//           slower the last quarter's diagnostics are than the first quarter's, and memory growth
+//           per edit (a Theil-Sen slope over the last three quarters, robust to a stray collection).
+//           Growth and drift are figures of one server, not compared by ratio (a ratio of two
+//           slopes near zero means nothing).
 //
 // What a key sends while typing (the fork's lspdiff bench, after VS Code): didChange; a completion
 // after "." and at the start of a word; the edited file's diagnostics; every DEBOUNCE_MS of typing,
@@ -36,9 +51,10 @@ import { crashSignals, type Side } from "../profile/profile.ts";
 import { fileUri, initializeParams } from "../session/initialize.ts";
 import { endPosition, languageId, pickPositions, readText, type Position } from "../session/picker.ts";
 import { TYPED } from "../session/script.ts";
+import { pinCommand, type Pinning } from "../host/pinning.ts";
 import { median, quantile } from "./stats.ts";
 
-export const LSP_SESSION_ID = "parallax.lsp-timing/2";
+export const LSP_SESSION_ID = "parallax.lsp-timing/3";
 export const DEBOUNCE_MS = 500;
 export const HOVER_EVERY = 8;
 const REQUEST_CANCELLED = -32800;
@@ -52,6 +68,15 @@ export interface LspTimingSpec {
   lines: number;
   // Lines typed closed loop (the service phase); 0 skips it.
   serviceLines: number;
+  // Lines typed closed loop with a pause before each key (the paused phase); 0 skips it.
+  pausedLines: number;
+  pauseMs: number;
+  // Error insert-and-fix cycles, cross-file import names, and edits of the long phase; 0 skips each.
+  errfixes: number;
+  imports: number;
+  longEdits: number;
+  // Cores the server is pinned to (null: not pinned).
+  pin?: Pinning | null;
   requestTimeoutMs: number;
 }
 
@@ -77,6 +102,15 @@ export interface SessionMetrics {
   "service.completionP50Ms": number | null;
   "service.diagnosticP50Ms": number | null;
   "service.cpuPerKeyMs": number | null;
+  "paused.keyP50Ms": number | null;
+  "paused.cpuPerKeyMs": number | null;
+  "errfix.errorDiagnosticsMs": number | null;
+  "errfix.fixDiagnosticsMs": number | null;
+  "imports.completionMs": number | null;
+  "imports.quickFixMs": number | null;
+  "long.diagnosticP50Ms": number | null;
+  "long.latencyDrift": number | null;
+  "long.memoryGrowthPerEditBytes": number | null;
   "session.memoryBytes": number | null;
 }
 
@@ -90,6 +124,11 @@ export interface SessionCounts {
   // Keys typed, and how late the harness sent them (p95, ms): a late harness means a loaded client.
   keys: number;
   lagP95Ms: number | null;
+  // Inserted errors the diagnostics did not report, import names tried, and missing-name diagnostics
+  // not found (no quick fix asked). Absent in sessions from before these phases.
+  errfixMissed?: number;
+  importNames?: number;
+  importsMissed?: number;
 }
 
 export interface SessionResult {
@@ -107,7 +146,44 @@ export interface SessionResult {
   stderrFile: string;
 }
 
-type Phase = "open" | "warmup" | "edit" | "typing" | "service";
+type Phase = "open" | "warmup" | "edit" | "typing" | "service" | "paused" | "errfix" | "imports" | "long";
+
+// The line added by the errfix phase: a type error every TypeScript checker reports.
+export const errorLine = (i: number): string => `\nconst parallaxError${i}: number = "not a number";\n`;
+
+// Names exported by `text` (declarations only; re-exports and default exports are skipped).
+export function exportedNames(text: string): string[] {
+  const re = /^export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|interface|type|enum|abstract\s+class)\s+([A-Za-z_$][\w$]*)/gm;
+  return [...new Set([...text.matchAll(re)].map((m) => m[1]!))];
+}
+
+// Up to `count` names exported by the other files and absent from the edited one, taken round-robin
+// across files in file order, so every server is asked the same names.
+export function importCandidates(edited: string, others: string[], count: number): string[] {
+  const lists = others.map((t) => exportedNames(t).filter((n) => n.length >= 4 && !new RegExp(`\\b${n.replace(/\$/g, "\\$")}\\b`).test(edited)));
+  const out: string[] = [];
+  for (let i = 0; out.length < count && lists.some((l) => i < l.length); i++)
+    for (const l of lists) if (i < l.length && out.length < count && !out.includes(l[i]!)) out.push(l[i]!);
+  return out;
+}
+
+// Theil-Sen slope of y over x: the median of every pairwise slope. A few outliers (a collection, a
+// cache filled once) move it far less than they move a least-squares fit.
+export function theilSen(points: readonly (readonly [number, number])[]): number | null {
+  const slopes: number[] = [];
+  for (let i = 0; i < points.length; i++)
+    for (let j = i + 1; j < points.length; j++) {
+      const dx = points[j]![0] - points[i]![0];
+      if (dx !== 0) slopes.push((points[j]![1] - points[i]![1]) / dx);
+    }
+  return slopes.length ? median(slopes) : null;
+}
+
+const diagnosticItems = (a: Answer): { range?: { start?: { line?: number } } }[] => {
+  const r = a.result as { items?: unknown[] } | unknown[] | null | undefined;
+  const items = Array.isArray(r) ? r : r && Array.isArray(r.items) ? r.items : [];
+  return items as { range?: { start?: { line?: number } } }[];
+};
 
 interface Doc {
   uri: string;
@@ -140,6 +216,15 @@ function emptyMetrics(): SessionMetrics {
     "service.completionP50Ms": null,
     "service.diagnosticP50Ms": null,
     "service.cpuPerKeyMs": null,
+    "paused.keyP50Ms": null,
+    "paused.cpuPerKeyMs": null,
+    "errfix.errorDiagnosticsMs": null,
+    "errfix.fixDiagnosticsMs": null,
+    "imports.completionMs": null,
+    "imports.quickFixMs": null,
+    "long.diagnosticP50Ms": null,
+    "long.latencyDrift": null,
+    "long.memoryGrowthPerEditBytes": null,
     "session.memoryBytes": null,
   };
 }
@@ -165,9 +250,10 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
   const metrics = emptyMetrics();
   const counts: SessionCounts = { requests: 0, errors: 0, cancelled: 0, keys: 0, lagP95Ms: null };
 
+  const command = pinCommand(side.lspCommand, spec.pin ?? null);
   const t0 = performance.now();
-  await writer.write({ type: "start", run: id, side: side.label, startedAt: new Date().toISOString(), command: side.lspCommand, session: LSP_SESSION_ID });
-  const client = new LspClient(side.lspCommand, { cwd: spec.root, env: side.env.env, stderr, requestTimeoutMs: spec.requestTimeoutMs });
+  await writer.write({ type: "start", run: id, side: side.label, startedAt: new Date().toISOString(), command, session: LSP_SESSION_ID });
+  const client = new LspClient(command, { cwd: spec.root, env: side.env.env, stderr, requestTimeoutMs: spec.requestTimeoutMs });
   client.proc.stderr!.on("data", (c: Buffer) => {
     stderrChunks.push(c);
     if (stderrChunks.length > 64) stderrChunks.shift();
@@ -367,6 +453,96 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
       metrics["service.completionP50Ms"] = orNull(byKind.get("completion") ?? [], median);
       metrics["service.diagnosticP50Ms"] = orNull(byKind.get("diagnostic") ?? [], median);
     }
+    // paused
+    if (spec.pausedLines > 0) {
+      const perKey: number[] = [];
+      const before = usage();
+      let key = 0;
+      for (let line = 0; line < spec.pausedLines; line++) {
+        for (let i = 0; i < TYPED.length; i++, key++) {
+          await sleep(spec.pauseMs);
+          const start = performance.now();
+          const position = append(edited, TYPED[i]!);
+          for (const [, kind, method, params] of keyRequests(i, key, position)) await ask("paused", kind, method, params, undefined, key).answer;
+          perKey.push(performance.now() - start);
+        }
+        removeTail(edited, TYPED.length);
+      }
+      metrics["paused.cpuPerKeyMs"] = cpuDelta(before, usage(), key);
+      metrics["paused.keyP50Ms"] = orNull(perKey, median);
+    }
+
+    // errfix
+    if (spec.errfixes > 0) {
+      const baseline = diagnosticItems((await timed("warmup", "diagnostic", ...diagnostics(edited))).answer).length;
+      const shown: number[] = [];
+      const cleared: number[] = [];
+      let missed = 0;
+      for (let i = 0; i < spec.errfixes; i++) {
+        const line = errorLine(i);
+        append(edited, line);
+        const e = await timed("errfix", "diagnostic", ...diagnostics(edited));
+        if (diagnosticItems(e.answer).length <= baseline) missed++;
+        shown.push(e.latencyMs);
+        removeTail(edited, line.length);
+        cleared.push((await timed("errfix", "diagnostic", ...diagnostics(edited))).latencyMs);
+      }
+      counts.errfixMissed = missed;
+      metrics["errfix.errorDiagnosticsMs"] = median(shown);
+      metrics["errfix.fixDiagnosticsMs"] = median(cleared);
+    }
+
+    // imports
+    const names = spec.imports > 0 ? importCandidates(edited.text, docs.slice(1).map((d) => d.text), spec.imports) : [];
+    if (names.length) {
+      const completions: number[] = [];
+      const fixes: number[] = [];
+      let missed = 0;
+      for (const name of names) {
+        const prefix = `\n${name.slice(0, 3)}`;
+        const at = append(edited, prefix);
+        completions.push((await timed("imports", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: at, context: { triggerKind: 1 } })).latencyMs);
+        removeTail(edited, prefix.length);
+        const named = `\n${name};\n`;
+        const line = endPosition(edited.text).line + 1;
+        append(edited, named);
+        const d = await timed("imports", "diagnostic", ...diagnostics(edited));
+        const found = diagnosticItems(d.answer).filter((x) => x.range?.start?.line === line);
+        if (found.length) {
+          const range = { start: { line, character: 0 }, end: { line, character: name.length } };
+          const fix = await timed("imports", "quickFix", "textDocument/codeAction", { textDocument: { uri: edited.uri }, range, context: { diagnostics: found, only: ["quickfix"], triggerKind: 1 } });
+          fixes.push(fix.latencyMs);
+        } else missed++;
+        removeTail(edited, named.length);
+      }
+      await timed("warmup", "diagnostic", ...diagnostics(edited));
+      counts.importNames = names.length;
+      counts.importsMissed = missed;
+      metrics["imports.completionMs"] = median(completions);
+      metrics["imports.quickFixMs"] = orNull(fixes, median);
+    }
+
+    // long
+    if (spec.longEdits > 0) {
+      const lat: number[] = [];
+      const memory: [number, number][] = [];
+      for (let i = 0; i < spec.longEdits; i++) {
+        const at = append(edited, i % 2 ? " " : "x");
+        if (i % 4 === 1) await timed("long", "hover", ...hover);
+        if (i % 4 === 3) await timed("long", "completion", "textDocument/completion", { textDocument: { uri: edited.uri }, position: at, context: { triggerKind: 1 } });
+        lat.push((await timed("long", "diagnostic", ...diagnostics(edited))).latencyMs);
+        const u = usage();
+        if (u) memory.push([i, u.residentBytes]);
+      }
+      removeTail(edited, spec.longEdits);
+      await timed("warmup", "diagnostic", ...diagnostics(edited));
+      metrics["long.diagnosticP50Ms"] = median(lat);
+      const q = Math.floor(lat.length / 4);
+      if (q >= 2) metrics["long.latencyDrift"] = median(lat.slice(-q)) / median(lat.slice(0, q));
+      const settled = memory.slice(Math.floor(memory.length / 4));
+      if (settled.length >= 4) metrics["long.memoryGrowthPerEditBytes"] = theilSen(settled);
+    }
+
     endUsage = usage();
     metrics["session.memoryBytes"] = endUsage?.memoryBytes ?? null;
   } catch (e) {

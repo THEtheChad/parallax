@@ -14,6 +14,8 @@ import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "../src/co
 import { usageBackend } from "../src/host/serverUsage.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// No stored calibration from this machine leaks into the bundles under test.
+process.env.PARALLAX_CONFIG_DIR = mkdtempSync(join(tmpdir(), "parallax-config-"));
 const fake = join(here, "fixtures/fake-server.ts");
 const side = (name: string, label?: string): string => `${label ? `${label}:` : ""}${join(here, "fixtures/profiles", `${name}.json`)}=${fake}`;
 const quiet = (): void => {};
@@ -44,6 +46,11 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
     edits: 4,
     lines: 1,
     intervalMs: 30,
+    pausedLines: 1,
+    pauseMs: 5,
+    errfixes: 2,
+    imports: 2,
+    longEdits: 12,
     threads: ["default"],
     runs: 5,
     maxRuns: 5,
@@ -75,6 +82,17 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
   assert.ok(service.length > 0 && service.every((r) => !r.cancelled));
   for (let i = 1; i < service.length; i++) assert.ok(service[i]!.sent >= service[i - 1]!.answered, "closed loop");
 
+  // The editor scenarios: an error shown and cleared, cross-file names completed and fixed, a long run
+  // of edits; the paused phase's keys each come after the pause.
+  const phase = (p: string) => log.filter((r) => r.type === "request" && r.phase === p);
+  assert.equal(phase("errfix").length, 2 * 2);
+  assert.deepEqual(phase("imports").map((r) => r.kind), ["completion", "diagnostic", "quickFix", "completion", "diagnostic", "quickFix"]);
+  assert.equal(phase("long").filter((r) => r.kind === "diagnostic").length, 12);
+  assert.ok(phase("paused").length > 0);
+  const end = log.at(-1)!;
+  assert.equal(end.counts.errfixMissed, 0, "the fake reports the inserted error");
+  assert.deepEqual([end.counts.importNames, end.counts.importsMissed], [2, 0]);
+
   const [quick] = summary.candidates;
   assert.equal(quick!.state, "measured");
   // 8 ms per request plus 30 ms per update against 1 and 3.
@@ -93,6 +111,13 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
     assert.equal(slow.metrics["edit.cpuPerEditMs"], null);
   }
   assert.equal(slow.errors, 0);
+  assert.ok(slow.metrics["errfix.errorDiagnosticsMs"]!.estimate > 0);
+  assert.ok(slow.metrics["imports.quickFixMs"]!.estimate > 0);
+  assert.equal(quick!.metrics["paused.keyP50Ms"]!.call, "faster");
+  // Growth and drift are per-server figures, never compared.
+  assert.equal(quick!.metrics["long.memoryGrowthPerEditBytes"], undefined);
+  assert.ok(slow.metrics["long.latencyDrift"]!.estimate > 0);
+  if (usageBackend() !== "none") assert.notEqual(slow.metrics["long.memoryGrowthPerEditBytes"], null);
 
   // The summary is a pure function of samples.jsonl.
   assert.deepEqual(summarizeLspBenchBundle(dir, readLspBenchBundle(dir)), summary);
@@ -107,6 +132,10 @@ test("lsp-bench: a server that crashes mid-session fails its candidate", async (
     edits: 4,
     lines: 1,
     intervalMs: 20,
+    pausedLines: 0,
+    errfixes: 0,
+    imports: 0,
+    longEdits: 0,
     threads: ["default"],
     runs: 1,
     maxRuns: 1,

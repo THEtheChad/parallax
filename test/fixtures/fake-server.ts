@@ -20,6 +20,22 @@ const libPrefix =
     ? `file://${dirname(fileURLToPath(import.meta.url)).split("/").map(encodeURIComponent).join("/")}/`
     : "bundled:///libs/";
 let answered = 0;
+// Open documents' text, kept up to date from didOpen and didChange, so diagnostics can follow edits.
+const docs = new Map<string, string>();
+const offsetOf = (text: string, pos: { line: number; character: number }): number => {
+  let off = 0;
+  for (let l = 0; l < pos.line; l++) {
+    const nl = text.indexOf("\n", off);
+    if (nl < 0) return text.length;
+    off = nl + 1;
+  }
+  return Math.min(text.length, off + pos.character);
+};
+// A problem on every line that adds an error the way the bench does, or names something alone.
+const editedProblems = (uri: string) =>
+  (docs.get(uri) ?? "")
+    .split("\n")
+    .flatMap((line, i) => (/parallaxError|^[A-Za-z_$][\w$]*;$/.test(line) ? [{ range: range(i, 0), message: `problem on line ${i}`, severity: 1, code: 2304 }] : []));
 let hovers = 0;
 let completions = 0;
 
@@ -34,7 +50,7 @@ function answer(method: string, params: Record<string, any>): unknown {
   const pos = params?.position ?? { line: 0, character: 0 };
   switch (method) {
     case "textDocument/diagnostic":
-      return { kind: "full", items: [0, 1].map((i) => ({ range: range(i, 0), message: `problem ${i} in ${uri}`, severity: 1, code: 2300 + i })) };
+      return { kind: "full", items: [...[0, 1].map((i) => ({ range: range(i, 0), message: `problem ${i} in ${uri}`, severity: 1, code: 2300 + i })), ...editedProblems(uri)] };
     case "textDocument/hover":
       hovers++;
       return { contents: { kind: "markdown", value: env.FAKE_DIFF && hovers === 2 ? "something else" : `hover at ${pos.line}:${pos.character} in ${uri}` } };
@@ -103,6 +119,16 @@ process.stdin.on("data", (chunk: Buffer) => {
     if (msg.method === "exit") process.exit(0);
     if (msg.id === undefined) {
       if (msg.method === "initialized") send({ id: "cfg-1", method: "workspace/configuration", params: { items: [{ section: "typescript" }] } });
+      if (msg.method === "textDocument/didOpen") docs.set(msg.params.textDocument.uri, msg.params.textDocument.text);
+      if (msg.method === "textDocument/didChange") {
+        const uri = msg.params.textDocument.uri;
+        let text = docs.get(uri) ?? "";
+        for (const c of msg.params.contentChanges) {
+          if (!c.range) text = c.text;
+          else text = text.slice(0, offsetOf(text, c.range.start)) + c.text + text.slice(offsetOf(text, c.range.end));
+        }
+        docs.set(uri, text);
+      }
       if (msg.method === "textDocument/didOpen") send({ method: "textDocument/publishDiagnostics", params: { uri: msg.params.textDocument.uri, diagnostics: [] } });
       if (msg.method === "textDocument/didChange") dirty = true;
       if (msg.method === "$/cancelRequest") {

@@ -62,6 +62,11 @@ export interface CounterRecord {
   exit: { code: number | null; signal: string | null };
   timedOut: boolean;
   counters: Counters | null;
+  // Runs it took (one per event group), and events dropped as multiplexed or not counted (absent in
+  // older bundles).
+  runs?: number;
+  scaled?: string[];
+  missing?: string[];
 }
 
 // A counter over a side's counted runs: the median, and the spread (max - min) / median, which says how

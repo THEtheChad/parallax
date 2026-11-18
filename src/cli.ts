@@ -10,6 +10,9 @@ import { importLspdiff } from "./commands/importLspdiff.ts";
 import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "./commands/lspBench.ts";
 import { lspDiff } from "./commands/lspDiff.ts";
 import { publish, verifyResult } from "./commands/publish.ts";
+import { calibrate } from "./commands/calibrate.ts";
+import { renderCalibration } from "./report/calibration.ts";
+import { parseEnvMode, type EnvPolicy } from "./host/sealedEnv.ts";
 import { suiteRun } from "./commands/suiteRun.ts";
 import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
 import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
@@ -29,18 +32,26 @@ const USAGE = `usage:
   parallax bench --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
                  [--config tsconfig.json] [--threads both|default|single] [--runs 6] [--max-runs 15] [--min-runs 3]
                  [--resolution 0.05] [--resolution-ms 1] [--warmup 1] [--attempts 3] [--timeout-ms 600000]
-                 [--counter-runs 3]
+                 [--counter-runs 3] [--env sealed|inherit] [--pass-env NAME]... [--pin <cpu-list>]
                  [--max-busy-cores 1.5] [--idle-timeout-s 300] [--boot-settle-s 300]
                  [--max-outside-cores 1] [--max-canary-drift 0.1]
                                          time each side's check command in alternating rounds; candidates are
                                          compared by their per-round ratio to the reference
   parallax lsp-bench --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
-                     [--files 6] [--file <rel>]... [--edits 20] [--interval-ms 120] [--lines 4] [--service-lines 1] [--request-timeout-ms 120000]
-                     [--threads both|default|single] [round, resolution, idle and gate options as for bench]
+                     [--files 6] [--file <rel>]... [--edits 20] [--interval-ms 120] [--lines 4] [--service-lines 1]
+                     [--paused-lines 1] [--pause-ms 300] [--errfixes 5] [--imports 3] [--long-edits 60] [--request-timeout-ms 120000]
+                     [--threads both|default|single] [round, resolution, environment, pinning, idle and gate options as for bench]
                                          time each side's language server through one editor session per round:
                                          open (time to first diagnostics), edit (first request after an edit, CPU
                                          per edit), typing (latency from when each key was due, CPU per key),
-                                         service (closed loop: the server's own time per request)
+                                         service (closed loop: the server's own time per request), paused (keys
+                                         after quiet), errfix (an error shown and cleared), imports (cross-file
+                                         completion and the add-import fix), long (drift and memory growth per edit)
+  parallax calibrate --kind bench|lsp-bench --project <dir> --side [<label>:]<profile>=<bin> --out <bundle-dir>
+                     [--runs 9] [--no-save] [the options of that kind]
+                                         an A/A bench of one binary against itself: this machine's noise floor per
+                                         metric, kept for later benches on the same host setup, which warn when
+                                         their --resolution is below it
   parallax bench-summary <bundle-dir> [--max-outside-cores N] [--max-canary-drift F]
                                          recompute summary.json of a bench or lsp-bench bundle from samples.jsonl
                                          (optionally with other gates)
@@ -67,7 +78,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(USAGE);
     return command ? 0 : 2;
   }
-  if (command === "bench" || command === "lsp-bench" || command === "bench-summary") return benchCommand(command, rest);
+  if (command === "bench" || command === "lsp-bench" || command === "bench-summary" || command === "calibrate") return benchCommand(command, rest);
   if (command === "publish" || command === "verify-result" || command === "suite") return resultsCommand(command, rest);
   let summary: Summary;
   if (command === "lsp-diff") {
@@ -156,7 +167,44 @@ const ROUND_OPTIONS = {
   "boot-settle-s": { type: "string" },
   "max-outside-cores": { type: "string" },
   "max-canary-drift": { type: "string" },
+  env: { type: "string" },
+  "pass-env": { type: "string", multiple: true },
+  pin: { type: "string" },
 } as const;
+
+const LSP_SESSION_OPTIONS = {
+  files: { type: "string" },
+  file: { type: "string", multiple: true },
+  edits: { type: "string" },
+  "interval-ms": { type: "string" },
+  lines: { type: "string" },
+  "service-lines": { type: "string" },
+  "paused-lines": { type: "string" },
+  "pause-ms": { type: "string" },
+  errfixes: { type: "string" },
+  imports: { type: "string" },
+  "long-edits": { type: "string" },
+  "request-timeout-ms": { type: "string" },
+} as const;
+
+function lspSessionOptions(o: Values) {
+  return {
+    ...(Array.isArray(o.file) ? { file: o.file } : {}),
+    ...defined({
+      files: num(o, "files"),
+      edits: num(o, "edits"),
+      intervalMs: num(o, "interval-ms"),
+      lines: num(o, "lines"),
+      serviceLines: num(o, "service-lines"),
+      pausedLines: num(o, "paused-lines"),
+      pauseMs: num(o, "pause-ms"),
+      errfixes: num(o, "errfixes"),
+      imports: num(o, "imports"),
+      longEdits: num(o, "long-edits"),
+      requestTimeoutMs: num(o, "request-timeout-ms"),
+    }),
+  };
+}
 
 type Values = Record<string, string | boolean | string[] | undefined>;
 
@@ -170,9 +218,20 @@ function roundOptions(o: Values) {
       throw new UsageError((e as Error).message);
     }
   }
+  let env: EnvPolicy | undefined;
+  if (typeof o.env === "string" || Array.isArray(o["pass-env"])) {
+    try {
+      env = { mode: typeof o.env === "string" ? parseEnvMode(o.env) : "sealed", pass: Array.isArray(o["pass-env"]) ? o["pass-env"] : [] };
+    } catch (e) {
+      throw new UsageError((e as Error).message);
+    }
+    if (env.mode === "inherit" && env.pass.length) throw new UsageError("--pass-env only applies to --env sealed");
+  }
   return {
     ...defined({
       threads,
+      env,
+      pin: typeof o.pin === "string" ? o.pin : undefined,
       runs: num(o, "runs"),
       maxRuns: num(o, "max-runs"),
       minRounds: num(o, "min-runs"),
@@ -284,13 +343,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         out: { type: "string" },
         ref: { type: "string" },
         cand: { type: "string", multiple: true },
-        files: { type: "string" },
-        file: { type: "string", multiple: true },
-        edits: { type: "string" },
-        "interval-ms": { type: "string" },
-        lines: { type: "string" },
-        "service-lines": { type: "string" },
-        "request-timeout-ms": { type: "string" },
+        ...LSP_SESSION_OPTIONS,
         ...ROUND_OPTIONS,
       },
     });
@@ -300,21 +353,47 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
       out: o.out,
       ref: o.ref,
       cands: o.cand,
-      ...(o.file ? { file: o.file } : {}),
-      ...defined({
-        files: num(o, "files"),
-        edits: num(o, "edits"),
-        intervalMs: num(o, "interval-ms"),
-        lines: num(o, "lines"),
-        serviceLines: num(o, "service-lines"),
-        requestTimeoutMs: num(o, "request-timeout-ms"),
-      }),
+      ...lspSessionOptions(o),
       ...roundOptions(o),
       log,
     });
     log(`bundle ${r.dir}`);
     console.log(renderLspBenchSummary(r.summary));
     return r.summary.clean ? 0 : 1;
+  }
+  if (command === "calibrate") {
+    const { values: o } = parseArgs({
+      args: rest,
+      options: {
+        kind: { type: "string" },
+        project: { type: "string" },
+        out: { type: "string" },
+        side: { type: "string" },
+        "no-save": { type: "boolean" },
+        config: { type: "string" },
+        "counter-runs": { type: "string" },
+        "timeout-ms": { type: "string" },
+        ...LSP_SESSION_OPTIONS,
+        ...ROUND_OPTIONS,
+      },
+    });
+    if (o.kind !== "bench" && o.kind !== "lsp-bench") throw new UsageError("calibrate needs --kind bench or --kind lsp-bench");
+    if (!o.project || !o.out || !o.side) throw new UsageError("calibrate needs --project, --out and --side");
+    if (o["max-runs"] !== undefined) throw new UsageError("calibrate runs a fixed number of rounds: use --runs, not --max-runs");
+    const r = await calibrate({
+      kind: o.kind === "bench" ? "cli-bench" : "lsp-bench",
+      side: o.side,
+      project: o.project,
+      out: o.out,
+      save: o["no-save"] !== true,
+      ...defined({ config: o.config, timeoutMs: num(o, "timeout-ms"), counterRuns: num(o, "counter-runs") }),
+      ...lspSessionOptions(o),
+      ...roundOptions(o),
+      log,
+    });
+    log(`bundle ${r.dir}`);
+    console.log(renderCalibration(r.calibration, r.file));
+    return r.file || o["no-save"] ? 0 : 1;
   }
   // bench-summary: either kind of timing bundle.
   const { values: o, positionals } = parseArgs({
