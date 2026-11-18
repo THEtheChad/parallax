@@ -150,3 +150,34 @@ test("lsp-bench: a server that crashes mid-session fails its candidate", async (
   assert.equal(summary.rounds.failed, 1);
   assert.equal(summary.clean, false);
 });
+
+test("lsp-bench: a server that defers the add-import edit to codeAction/resolve pays for the resolve", async () => {
+  const { dir, summary } = await lspBench({
+    project: makeProject(),
+    out: join(mkdtempSync(join(tmpdir(), "parallax-lspbench-")), "b"),
+    ref: side("fake-lsp-quick", "eager"),
+    cands: [side("fake-lsp-defer", "defer")],
+    edits: 0,
+    lines: 0,
+    serviceLines: 0,
+    pausedLines: 0,
+    errfixes: 0,
+    imports: 2,
+    longEdits: 0,
+    threads: ["default"],
+    runs: 1,
+    maxRuns: 1,
+    minRounds: 1,
+    warmup: 0,
+    attempts: 1,
+    log: quiet,
+    ...open,
+  });
+  const kinds = (label: string) => readJsonl(join(dir, `runs/${label}.1.1.jsonl`)).filter((r) => r.phase === "imports").map((r) => r.kind);
+  assert.deepEqual(kinds("eager"), ["completion", "diagnostic", "quickFix", "completion", "diagnostic", "quickFix"]);
+  assert.deepEqual(kinds("defer"), ["completion", "diagnostic", "quickFix", "quickFixResolve", "completion", "diagnostic", "quickFix", "quickFixResolve"]);
+  for (const s of summary.sides) {
+    assert.equal(s.importsMissed, 0);
+    assert.ok(s.metrics["imports.quickFixMs"]!.estimate > 0);
+  }
+});

@@ -20,8 +20,9 @@ import {
   type Calibration,
   type HostKey,
 } from "../src/timing/calibration.ts";
-import { errorLine, exportedNames, importCandidates, theilSen } from "../src/timing/lspSession.ts";
-import type { BenchSummary } from "../src/timing/summary.ts";
+import { errorLine, exportedNames, importAction, importCandidates, theilSen } from "../src/timing/lspSession.ts";
+import { summarizeLspBench, type SessionRecord } from "../src/timing/lspSummary.ts";
+import type { BenchSummary, RoundRecord } from "../src/timing/summary.ts";
 
 test("sealed environment: only the allow-list passes, fixed locale and zone; inherit keeps everything", () => {
   const from = { PATH: "/bin", HOME: "/h", GOGC: "off", RAYON_NUM_THREADS: "3", NODE_OPTIONS: "--x", LANG: "de_DE.UTF-8", KEEP_ME: "1" };
@@ -62,9 +63,10 @@ test("pinning: cpu lists, validation against the allowed cores, the taskset pref
   assert.deepEqual(expandCpuList("0-2,5,1"), [0, 1, 2, 5]);
   assert.throws(() => expandCpuList("a-b"), /not a cpu list/);
   assert.throws(() => expandCpuList("3-1"), /backwards/);
+  assert.throws(() => expandCpuList("9007199254740992"), /beyond any machine/, "a huge number is refused, not looped over");
   assert.throws(() => parsePinning("0", null, "darwin"), /needs Linux/);
   if (process.platform === "linux") {
-    assert.throws(() => parsePinning("0,9999", "0-3", "linux"), /not ones this process may run on/);
+    assert.throws(() => parsePinning("0,4095", "0-3", "linux"), /not ones this process may run on/);
     assert.deepEqual(parsePinning("0", "0-3", "linux"), { cpus: "0", cores: 1 });
   }
   assert.deepEqual(pinCommand(["tsc", "-p", "."], { cpus: "2-3", cores: 2 }), ["taskset", "-c", "2-3", "tsc", "-p", "."]);
@@ -76,6 +78,7 @@ test("counters: zero and multiplexed counts are dropped, and a machine that cann
   assert.equal(scaled!.counters.instructions, null);
   assert.deepEqual(scaled!.scaled, ["instructions"]);
   assert.equal(scaled!.counters.cycles, 2000);
+  assert.deepEqual(parsePerfStatDetail("1000,,instructions:u,996,99.60,,\n")!.scaled, ["instructions"], "even slightly scaled is scaled");
   const zero = parsePerfStatDetail("1000,,instructions:u,1000,100.00,,\n0,,cycles:u,1000,100.00,,\n");
   assert.deepEqual(zero!.missing, ["cycles"], "a counter reading 0 (a VM that exposes but never counts it) is missing, not 0");
   assert.equal(zero!.counters.cycles, null);
@@ -164,4 +167,38 @@ test("editor scenarios: exported names, import candidates, the error line, Theil
   assert.match(errorLine(2), /^\nconst parallaxError2: number = "/);
   assert.equal(theilSen([[0, 0], [1, 10], [2, 20], [3, 30], [4, 1000]]), 10, "one outlier moves it little");
   assert.equal(theilSen([[0, 5]]), null);
+});
+
+test("lsp summary: sessions from before a metric existed keep their summary shape", () => {
+  const idle = { waitedMs: 1000, busyCores: 0.2, pressure: null, timedOut: false, uptimeS: 9999, bootSettleWaitedMs: 0 };
+  const win = { wallMs: 1000, machineCpuMs: 0, machineCores: 0, selfCpuMs: 0, pressure: null };
+  const records: (SessionRecord | RoundRecord)[] = [];
+  for (let round = 1; round <= 3; round++) {
+    records.push({ type: "round", round, attempt: 1, order: ["ref", "cand"], idle, canaryBeforeMs: 20, canaryAfterMs: 20, window: win, outsideCores: 0, rejected: [] });
+    for (const [side, ms] of [["ref", 10], ["cand", 8]] as const)
+      records.push({
+        type: "session", side, role: side, round, attempt: 1, warmup: false, startedAt: "", outcome: "clean",
+        exit: { code: 0, signal: null }, shutdownClean: true, crashSignals: [], durationMs: 1, cpuMs: null,
+        // An old session: two metrics, no errfix or import counts.
+        metrics: { "open.firstDiagnosticsMs": ms, "service.keyP50Ms": null } as unknown as SessionRecord["metrics"],
+        counts: { requests: 1, errors: 0, cancelled: 0, keys: 0, lagP95Ms: null }, file: "",
+      });
+  }
+  const s = summarizeLspBench({
+    records,
+    sides: [{ label: "ref", role: "ref" }, { label: "cand", role: "cand" }],
+    plannedRounds: 3, minRounds: 3, gates: { maxOutsideCores: null, maxCanaryDrift: null }, usage: "none", memory: null,
+  });
+  assert.deepEqual(Object.keys(s.sides[0]!.metrics), ["open.firstDiagnosticsMs", "service.keyP50Ms"]);
+  assert.deepEqual(Object.keys(s.candidates[0]!.metrics), ["open.firstDiagnosticsMs", "service.keyP50Ms"]);
+  assert.equal("errfixMissed" in s.sides[0]!, false);
+});
+
+test("imports: only an add-import action counts as the fix", () => {
+  const answer = (result: unknown) => ({ id: 1, method: "textDocument/codeAction", raw: "", result, ms: 1, start: 0, end: 1, bytes: 1 });
+  assert.equal(importAction(answer([])), null);
+  assert.equal(importAction(answer(null)), null);
+  assert.equal(importAction(answer([{ title: "Remove unused declaration", kind: "quickfix", edit: {} }])), null);
+  assert.equal(importAction(answer([{ title: "Add import", command: "x" }])), null, "a bare command is not an action");
+  assert.deepEqual(importAction(answer([{ title: "Ignore" }, { title: 'Add import from "./b"', data: 1 }])), { title: 'Add import from "./b"', data: 1 });
 });

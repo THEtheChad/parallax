@@ -72,7 +72,12 @@ function answer(method: string, params: Record<string, any>): unknown {
       return { isIncomplete: false, items };
     }
     case "textDocument/codeAction":
-      return params?.context?.diagnostics?.length ? [{ title: "Fix it", kind: "quickfix", diagnostics: params.context.diagnostics }] : [];
+      if (!params?.context?.diagnostics?.length) return [];
+      // FAKE_DEFER_EDITS=1: the edit comes from codeAction/resolve, as some servers do.
+      if (env.FAKE_DEFER_EDITS) return [{ title: "Add import from \"./b\"", kind: "quickfix", diagnostics: params.context.diagnostics, data: { uri } }];
+      return [{ title: "Add import from \"./b\"", kind: "quickfix", diagnostics: params.context.diagnostics, edit: { changes: { [uri]: [] } } }];
+    case "codeAction/resolve":
+      return { ...params, edit: { changes: { [params?.data?.uri ?? ""]: [] } } };
     default:
       return { method, at: pos };
   }

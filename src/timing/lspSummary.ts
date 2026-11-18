@@ -146,6 +146,11 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
   const plan = planOf(input.plannedRounds, input.maxRounds);
   const confidence = lookConfidence(accepted.length, plan);
   const resolution = input.resolution ?? DEFAULT_RESOLUTION_SETTING;
+  // Only the metrics the sessions measured: a bundle or published result from before a metric existed
+  // keeps the summary shape it was published with (verify-result compares summaries exactly).
+  const measured = sessions.filter((x) => !x.warmup);
+  const metricsHere = METRICS.filter(({ key }) => measured.some((x) => key in x.metrics));
+  const countsHere = (k: "errfixMissed" | "importsMissed"): boolean => measured.some((x) => x.counts[k] !== undefined);
   const values = (ss: SessionRecord[], key: MetricKey): number[] | null => {
     // Sessions from before a metric existed have no entry for it.
     const xs = ss.map((s) => s.metrics[key] ?? null);
@@ -159,7 +164,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     const outcomes: Partial<Record<Outcome, number>> = {};
     for (const s of all) outcomes[s.outcome] = (outcomes[s.outcome] ?? 0) + 1;
     const metrics: Partial<Record<MetricKey, Interval | null>> = {};
-    for (const { key } of METRICS) {
+    for (const { key } of metricsHere) {
       const xs = values(mine, key);
       metrics[key] = xs ? medianInterval(xs, confidence) : null;
     }
@@ -173,8 +178,8 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
       requests: mine.reduce((t, s) => t + s.counts.requests, 0),
       errors: mine.reduce((t, s) => t + s.counts.errors, 0),
       cancelled: mine.reduce((t, s) => t + s.counts.cancelled, 0),
-      errfixMissed: mine.reduce((t, s) => t + (s.counts.errfixMissed ?? 0), 0),
-      importsMissed: mine.reduce((t, s) => t + (s.counts.importsMissed ?? 0), 0),
+      ...(countsHere("errfixMissed") ? { errfixMissed: mine.reduce((t, s) => t + (s.counts.errfixMissed ?? 0), 0) } : {}),
+      ...(countsHere("importsMissed") ? { importsMissed: mine.reduce((t, s) => t + (s.counts.importsMissed ?? 0), 0) } : {}),
       metrics,
     };
   });
@@ -187,7 +192,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
       const anyFailed = sessions.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : accepted.length < input.minRounds ? "noisy" : "measured";
       const metrics: LspCandidateSummary["metrics"] = {};
-      for (const { key, unit, compare } of METRICS) {
+      for (const { key, unit, compare } of metricsHere) {
         if (compare === false) continue;
         const pairs = accepted.map((ss) => [ss.find((s) => s.side === ref.label)!.metrics[key] ?? null, ss.find((s) => s.side === label)!.metrics[key] ?? null] as const);
         const ok = pairs.length > 0 && pairs.every(([r, c]) => r !== null && r > 0 && c !== null);

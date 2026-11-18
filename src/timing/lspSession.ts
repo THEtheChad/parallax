@@ -179,6 +179,13 @@ export function theilSen(points: readonly (readonly [number, number])[]): number
   return slopes.length ? median(slopes) : null;
 }
 
+// The first add-import action of a codeAction answer (commands, the older form, are not actions).
+export function importAction(a: Answer): { title: string; edit?: unknown; data?: unknown } | null {
+  const list = Array.isArray(a.result) ? (a.result as { title?: unknown; command?: unknown; edit?: unknown }[]) : [];
+  const found = list.find((x) => x && typeof x.title === "string" && /import/i.test(x.title) && typeof x.command !== "string");
+  return (found as { title: string; edit?: unknown; data?: unknown } | undefined) ?? null;
+}
+
 const diagnosticItems = (a: Answer): { range?: { start?: { line?: number } } }[] => {
   const r = a.result as { items?: unknown[] } | unknown[] | null | undefined;
   const items = Array.isArray(r) ? r : r && Array.isArray(r.items) ? r.items : [];
@@ -508,18 +515,30 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
         append(edited, named);
         const d = await timed("imports", "diagnostic", ...diagnostics(edited));
         const found = diagnosticItems(d.answer).filter((x) => x.range?.start?.line === line);
+        // The fix counts only when an add-import action came back, and its time runs until its edit
+        // is in hand: a server that defers the edit to codeAction/resolve pays for the resolve too.
+        let fixMs: number | null = null;
         if (found.length) {
           const range = { start: { line, character: 0 }, end: { line, character: name.length } };
           const fix = await timed("imports", "quickFix", "textDocument/codeAction", { textDocument: { uri: edited.uri }, range, context: { diagnostics: found, only: ["quickfix"], triggerKind: 1 } });
-          fixes.push(fix.latencyMs);
-        } else missed++;
+          const action = importAction(fix.answer);
+          if (action?.edit) fixMs = fix.latencyMs;
+          else if (action) {
+            const resolved = await timed("imports", "quickFixResolve", "codeAction/resolve", action);
+            if ((resolved.answer.result as { edit?: unknown } | null)?.edit) fixMs = fix.latencyMs + resolved.latencyMs;
+          }
+        }
+        if (fixMs === null) missed++;
+        else fixes.push(fixMs);
         removeTail(edited, named.length);
       }
       await timed("warmup", "diagnostic", ...diagnostics(edited));
       counts.importNames = names.length;
       counts.importsMissed = missed;
       metrics["imports.completionMs"] = median(completions);
-      metrics["imports.quickFixMs"] = orNull(fixes, median);
+      // Only when every name got its fix: a median over fewer names than the other side's would
+      // compare different work.
+      metrics["imports.quickFixMs"] = missed === 0 ? median(fixes) : null;
     }
 
     // long

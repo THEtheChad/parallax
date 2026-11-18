@@ -17,6 +17,9 @@ export interface Pinning {
   cores: number;
 }
 
+// Linux's own limit on CPU numbers (CONFIG_NR_CPUS at most 8192).
+const MAX_CPU = 8191;
+
 // "0-3,8" -> [0, 1, 2, 3, 8]; throws on anything else.
 export function expandCpuList(list: string): number[] {
   const out: number[] = [];
@@ -26,6 +29,7 @@ export function expandCpuList(list: string): number[] {
     const lo = Number(m[1]);
     const hi = m[2] === undefined ? lo : Number(m[2]);
     if (hi < lo) throw new Error(`--pin: ${part} runs backwards`);
+    if (hi > MAX_CPU) throw new Error(`--pin: core ${hi} is beyond any machine (at most ${MAX_CPU})`);
     for (let c = lo; c <= hi; c++) out.push(c);
   }
   return [...new Set(out)].sort((a, b) => a - b);

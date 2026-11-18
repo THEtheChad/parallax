@@ -78,7 +78,8 @@ export function parsePerfStatDetail(text: string): PerfStat | null {
       missing.push(event);
       continue;
     }
-    if (Number.isFinite(pct) && pct < 99.5) {
+    // perf prints 100.00 for a counter that ran the whole time; anything less was scaled.
+    if (!Number.isFinite(pct) || pct < 100) {
       scaled.push(event);
       continue;
     }
