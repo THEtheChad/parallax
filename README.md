@@ -86,7 +86,13 @@ the round if other programs used the CPU or the machine changed speed. Each side
 and single-threaded (`--threads both|default|single`); candidates are compared with the reference
 in the same mode by their per-round time ratio, with distribution-free intervals. The bench runs
 `--runs` (6) rounds, then more while any call is unsettled, up to `--max-runs` (15). Where `perf`
-works it also counts instructions and cycles in separate untimed runs.
+works it also counts instructions and cycles in separate untimed runs, after checking that each event
+really counts. Commands run in a sealed environment (`--env sealed`, the default; `--pass-env NAME`
+adds a variable), optionally pinned to cores (`--pin 2-5`, Linux).
+
+`parallax calibrate --kind bench --side tsc7=<tsc7-binary> --project <dir> --out <bundle-dir>`
+benches one binary against itself to measure this machine's noise floor; later benches on the same
+setup warn when `--resolution` is below it.
 
 The output has a table of sides (wall time, CPU, peak memory, exit code, whether the output matches
 the reference), a table of candidates (ratio, interval, call: `faster`, `slower`, `same ±r`,
@@ -110,8 +116,10 @@ pnpm parallax lsp-bench --project <dir> \
 Times what someone using an editor waits for, in the same rounds as `bench`. Each round starts every
 side's server once and runs one session: **open** (time to first diagnostics), **edit** (the first
 request after an edit, which pays for the server's update; CPU per edit), **typing** (open loop: keys
-on a fixed schedule, latency from when each key was due, what a user feels) and **service** (closed
-loop: one request at a time, the server's own time per request). The files are picked as for
+on a fixed schedule, latency from when each key was due, what a user feels), **service** (closed
+loop: one request at a time, the server's own time per request), **paused** (keys after quiet, where
+background work shows), **errfix** (an error shown and cleared), **imports** (cross-file completion
+and the add-import fix) and **long** (a long run of edits: slowdown and memory growth per edit). The files are picked as for
 `lsp-diff` (`--files 6`, or `--file <rel>` repeated; the first is edited). Every request of every
 session is kept in `runs/<side>.<round>.<attempt>.jsonl`.
 

@@ -45,7 +45,7 @@ export function pickFiles(root: string, count: number, explicit?: string[]): str
 export const languageId = (path: string): string => (/x$/.test(path) ? "typescriptreact" : "typescript");
 
 // Blanks comments and string contents (keeping offsets) so identifiers are found in code only.
-function maskNonCode(text: string): string {
+export function maskNonCode(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:\\[\s\S]|[^`\\])*`|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g, (m) =>
     m.replace(/[^\n]/g, " "),
   );

@@ -32,7 +32,10 @@ export interface SessionRecord {
 export interface MetricInfo {
   key: MetricKey;
   label: string;
-  unit: "ms" | "bytes";
+  // "bytes/edit": a growth rate; "x": a ratio within one session.
+  unit: "ms" | "bytes" | "bytes/edit" | "x";
+  // false: a figure of each server alone, never compared by ratio (it can be zero or negative).
+  compare?: false;
 }
 
 // Report order. Every metric is lower-is-better.
@@ -56,6 +59,15 @@ export const METRICS: MetricInfo[] = [
   { key: "service.completionP50Ms", label: "service: completion p50", unit: "ms" },
   { key: "service.diagnosticP50Ms", label: "service: diagnostics p50", unit: "ms" },
   { key: "service.cpuPerKeyMs", label: "service: CPU per key", unit: "ms" },
+  { key: "paused.keyP50Ms", label: "paused: per key p50", unit: "ms" },
+  { key: "paused.cpuPerKeyMs", label: "paused: CPU per key", unit: "ms" },
+  { key: "errfix.errorDiagnosticsMs", label: "errfix: error shown", unit: "ms" },
+  { key: "errfix.fixDiagnosticsMs", label: "errfix: error cleared", unit: "ms" },
+  { key: "imports.completionMs", label: "imports: completion", unit: "ms" },
+  { key: "imports.quickFixMs", label: "imports: add-import fix", unit: "ms" },
+  { key: "long.diagnosticP50Ms", label: "long: diagnostics p50", unit: "ms" },
+  { key: "long.latencyDrift", label: "long: last/first quarter", unit: "x", compare: false },
+  { key: "long.memoryGrowthPerEditBytes", label: "long: memory growth per edit", unit: "bytes/edit", compare: false },
   { key: "session.memoryBytes", label: "session: memory", unit: "bytes" },
 ];
 
@@ -72,6 +84,10 @@ export interface LspSideSummary {
   requests: number;
   errors: number;
   cancelled: number;
+  // Over accepted rounds: inserted errors the diagnostics missed, and import names whose missing-name
+  // diagnostic was not found (absent in older summaries).
+  errfixMissed?: number;
+  importsMissed?: number;
   metrics: Partial<Record<MetricKey, Interval | null>>;
 }
 
@@ -121,7 +137,8 @@ export interface LspSummarizeInput {
   memory: "peak" | "current" | null;
 }
 
-const failed = (s: SessionRecord): boolean => s.outcome !== "clean";
+export const sessionFailed = (s: SessionRecord): boolean => s.outcome !== "clean";
+const failed = sessionFailed;
 
 export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
   const rounds = input.records.filter((r): r is RoundRecord => r.type === "round");
@@ -130,8 +147,14 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
   const plan = planOf(input.plannedRounds, input.maxRounds);
   const confidence = lookConfidence(accepted.length, plan);
   const resolution = input.resolution ?? DEFAULT_RESOLUTION_SETTING;
+  // Only the metrics the sessions measured: a bundle or published result from before a metric existed
+  // keeps the summary shape it was published with (verify-result compares summaries exactly).
+  const measured = sessions.filter((x) => !x.warmup);
+  const metricsHere = METRICS.filter(({ key }) => measured.some((x) => key in x.metrics));
+  const countsHere = (k: "errfixMissed" | "importsMissed"): boolean => measured.some((x) => x.counts[k] !== undefined);
   const values = (ss: SessionRecord[], key: MetricKey): number[] | null => {
-    const xs = ss.map((s) => s.metrics[key]);
+    // Sessions from before a metric existed have no entry for it.
+    const xs = ss.map((s) => s.metrics[key] ?? null);
     return xs.length && xs.every((x): x is number => x !== null) ? xs : null;
   };
 
@@ -142,7 +165,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     const outcomes: Partial<Record<Outcome, number>> = {};
     for (const s of all) outcomes[s.outcome] = (outcomes[s.outcome] ?? 0) + 1;
     const metrics: Partial<Record<MetricKey, Interval | null>> = {};
-    for (const { key } of METRICS) {
+    for (const { key } of metricsHere) {
       const xs = values(mine, key);
       metrics[key] = xs ? medianInterval(xs, confidence) : null;
     }
@@ -156,6 +179,8 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
       requests: mine.reduce((t, s) => t + s.counts.requests, 0),
       errors: mine.reduce((t, s) => t + s.counts.errors, 0),
       cancelled: mine.reduce((t, s) => t + s.counts.cancelled, 0),
+      ...(countsHere("errfixMissed") ? { errfixMissed: mine.reduce((t, s) => t + (s.counts.errfixMissed ?? 0), 0) } : {}),
+      ...(countsHere("importsMissed") ? { importsMissed: mine.reduce((t, s) => t + (s.counts.importsMissed ?? 0), 0) } : {}),
       metrics,
     };
   });
@@ -168,8 +193,9 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
       const anyFailed = sessions.some((s) => (s.side === label || s.side === ref.label) && failed(s));
       const state: CandidateState = anyFailed ? "failed" : accepted.length < input.minRounds ? "noisy" : "measured";
       const metrics: LspCandidateSummary["metrics"] = {};
-      for (const { key, unit } of METRICS) {
-        const pairs = accepted.map((ss) => [ss.find((s) => s.side === ref.label)!.metrics[key], ss.find((s) => s.side === label)!.metrics[key]] as const);
+      for (const { key, unit, compare } of metricsHere) {
+        if (compare === false) continue;
+        const pairs = accepted.map((ss) => [ss.find((s) => s.side === ref.label)!.metrics[key] ?? null, ss.find((s) => s.side === label)!.metrics[key] ?? null] as const);
         const ok = pairs.length > 0 && pairs.every(([r, c]) => r !== null && r > 0 && c !== null);
         const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!), confidence) : null;
         const same = sameWithin(resolution.relative, unit === "ms" ? resolution.floorMs : 0, ok ? median(pairs.map(([r]) => r!)) : null);

@@ -65,6 +65,15 @@ export function readHwm(pid: string): number {
   }
 }
 
+export function readRss(pid: string): number {
+  try {
+    const m = /^VmRSS:\s+(\d+) kB/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
+    return m ? Number(m[1]) * 1024 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export class GroupTracker {
   readonly #pgid: number;
   readonly #members = new Map<number, Member>();
