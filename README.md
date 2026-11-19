@@ -28,10 +28,11 @@ package version, the harness commit and the Node version.
 
 The report goes to stdout and the log to stderr, so `parallax bench ... > report.txt` keeps the
 report clean. The long-running commands (`lsp-diff`, `bench`, `lsp-bench`, `calibrate`, `suite run`)
-stamp each log line with the time since the start (`[41:02]`), log a line when each round starts and
-one per side as it finishes, and after each look say how much is left as a range: a sequential bench
-stops at the first look where every call is settled, so it may end at the next look or run to
-`--max-runs`. `--quiet` (`-q`) drops the progress and keeps warnings and errors.
+stamp each log line with the time since the start (`[41:02]`; on a terminal, a stamp that would
+repeat the line above's is left blank, while a file or CI log keeps one on every line), log a line
+when each round starts and one per side as it finishes, and after each look say how much is left as
+a range: a sequential bench stops at the first look where every call is settled, so it may end at the
+next look or run to `--max-runs`. `--quiet` (`-q`) drops the progress and keeps warnings and errors.
 
 On a terminal, the text report and the log are in colour (calls: faster green, slower red,
 unresolved yellow; outputs that differ, failed states and errors red; warnings yellow), and a long

@@ -38,6 +38,10 @@ export interface LogOptions {
   // Every line starts with the time since the log was made ("[41:02] "): for runs that take minutes
   // or hours, so a line says when it happened and how long a step took.
   elapsed?: boolean;
+  // With `elapsed`, false leaves a stamp off (blank, so the text stays aligned) where it would repeat
+  // the line above's: for a terminal, where a run of "[0:21]" says nothing new. On by default, so a
+  // file or CI log keeps one on every line for grep.
+  repeatStamps?: boolean;
   write?: (line: string) => void;
   now?: () => number;
   // Colours for a terminal (style.ts paintFor(process.stderr)); plain by default.
@@ -57,13 +61,25 @@ export function createLog(o: LogOptions = {}): Log {
   const t0 = now();
   // The status line on screen, painted, or null.
   let shown: string | null = null;
+  // The clock reading on the last stamped line, for repeatStamps: false.
+  let lastClock: string | null = null;
   const emit = (msg: string, warning = false): void => {
     if (shown !== null) o.status!.raw(ERASE);
-    const stamp = o.elapsed ? paint("dim", `[${fmtElapsed(now() - t0)}]`) + " " : "";
+    const clock = `[${fmtElapsed(now() - t0)}]`;
     const lines = msg.split("\n");
     if (warning) lines[0] = `${paint("warn", "warning:")} ${lines[0]}`;
     // Each line of a multi-line message gets its own stamp; blank lines (section breaks) stay blank.
-    for (const line of lines) write(line && stamp + line);
+    for (const line of lines) {
+      if (!line || !o.elapsed) {
+        // A blank line starts a section, which shows its time again.
+        if (!line) lastClock = null;
+        write(line);
+        continue;
+      }
+      const repeat = o.repeatStamps === false && clock === lastClock;
+      write(`${repeat ? " ".repeat(clock.length) : paint("dim", clock)} ${line}`);
+      lastClock = clock;
+    }
     if (shown !== null) o.status!.raw(shown);
   };
   const log = ((msg: string) => {

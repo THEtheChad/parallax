@@ -34,6 +34,31 @@ test("elapsed stamps: on every line of a message, not on blank ones", () => {
   assert.equal(fmtElapsed(41 * 60_000 + 2_000), "41:02");
 });
 
+test("elapsed stamps on a terminal: a stamp that repeats the line above's is left blank, text aligned", () => {
+  let now = 0;
+  const lines: string[] = [];
+  const log = createLog({ elapsed: true, repeatStamps: false, now: () => now, write: (l) => lines.push(l) });
+  now = 21_000;
+  log("round 3.2 (2 accepted, need 3)");
+  log("  tsc7  67 ms wall");
+  now = 21_900;
+  log("  again  63 ms wall\n  canary 15.9/15.8 ms: accepted");
+  now = 24_000;
+  log("  tsc7@1t  124 ms wall");
+  log("");
+  log.warn("slow disk");
+  // After a blank line (a new section) the stamp shows again, though the time has not moved.
+  assert.deepEqual(lines, [
+    "[0:21] round 3.2 (2 accepted, need 3)",
+    "         tsc7  67 ms wall",
+    "         again  63 ms wall",
+    "         canary 15.9/15.8 ms: accepted",
+    "[0:24]   tsc7@1t  124 ms wall",
+    "",
+    "[0:24] warning: slow disk",
+  ]);
+});
+
 test("what is left of a bench is a range: to the next look if every call settles, else to --max-runs", () => {
   const plan = { runs: 6, maxRuns: 15 };
   // After round 1: at least the 5 rounds to the first look, at most 14.

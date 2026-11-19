@@ -845,6 +845,9 @@ async function runCommand(c: Command, args: string[]): Promise<number> {
   const log = createLog({
     quiet: values.quiet === true,
     elapsed: c.longRunning === true,
+    // On a terminal a stamp that repeats the line above's is left off; in a file or CI log every line
+    // keeps one, for grep.
+    repeatStamps: !process.stderr.isTTY,
     paint: errPaint(),
     // A status line only where someone watches: stderr a terminal that can erase a line (not
     // TERM=dumb), and a command that runs for a while.
