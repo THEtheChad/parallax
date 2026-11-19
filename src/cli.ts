@@ -22,7 +22,7 @@ import { calibrate, DEFAULT_CALIBRATION_RUNS } from "./commands/calibrate.ts";
 import { parseEnvMode, type EnvPolicy } from "./host/sealedEnv.ts";
 import { expandCpuList } from "./host/pinning.ts";
 import { suiteRun } from "./commands/suiteRun.ts";
-import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
+import { parseSideSpec, parseThreadModes, type ThreadMode } from "./profile/profile.ts";
 import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
 import { formatBench, formatCalibration, formatLspBench, formatSummary, FORMATS, parseFormat, type Format } from "./report/render.ts";
@@ -40,7 +40,8 @@ interface Opt {
   name: string;
   short?: string;
   // The value's placeholder in help ("<n>"); absent for a flag. It also says what checkValues takes:
-  // <n> a whole number; <ms>, <s>, <cores>, <fraction>, <p> a number; a|b|c one of those words.
+  // <n> a whole number; <ms>, <s>, <cores>, <fraction>, <p> a number; a|b|c one of those words;
+  // ...=<bin> a side. Whatever it is, it may not be empty.
   value?: string;
   // <n>: the least whole number that means anything (1 for counts of rounds or files).
   min?: number;
@@ -833,6 +834,7 @@ async function runCommand(c: Command, args: string[]): Promise<number> {
     return 0;
   }
   try {
+    if (positionals.some((p) => !p.trim())) throw new UsageError("an argument is empty (an unset shell variable?)");
     checkValues(c, values, all);
   } catch (e) {
     if (e instanceof UsageError) e.command = c;
@@ -863,7 +865,14 @@ async function runCommand(c: Command, args: string[]): Promise<number> {
 function checkValues(c: Command, values: Values, opts: Opt[]): void {
   for (const x of opts) {
     const v = values[x.name];
-    if (!x.value || typeof v !== "string") continue;
+    if (!x.value || v === undefined || typeof v === "boolean") continue;
+    // An unset shell variable (`--out "$OUT"`, `--warmup=$N`) gives an empty value, which would
+    // otherwise be read as 0 or as the working directory.
+    for (const one of Array.isArray(v) ? v : [v]) {
+      if (!one.trim()) throw new UsageError(`--${x.name} is empty; it wants ${x.value} (an unset shell variable?)`);
+      if (x.value.endsWith("=<bin>")) parseSideSpec(one);
+    }
+    if (typeof v !== "string") continue;
     if (x.name === "threads") roundThreads(values);
     else if (x.name === "env") envOption(values);
     else if (x.name === "pin") pinOption(v);

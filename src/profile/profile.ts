@@ -248,9 +248,15 @@ export interface BindOptions {
   env?: EnvPolicy;
 }
 
-// Binds `profile=bin` (or `label:profile=bin`) into a side. The label defaults to the profile name.
-export async function bindSide(spec: string, role: Role, opts: BindOptions = {}): Promise<Side> {
-  const envPolicy = opts.env ?? DEFAULT_ENV_POLICY;
+export interface SideSpec {
+  label: string | undefined;
+  profileName: string;
+  bin: string;
+}
+
+// The syntax of `profile=bin` (or `label:profile=bin`), touching no file: the CLI checks every side
+// with it before running anything, and bindSide parses with it.
+export function parseSideSpec(spec: string): SideSpec {
   const eq = spec.indexOf("=");
   if (eq < 1) throw new InputError(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
   const left = spec.slice(0, eq);
@@ -258,11 +264,18 @@ export async function bindSide(spec: string, role: Role, opts: BindOptions = {})
   // ("C:\p\x.json"), not a label (so a one-letter label cannot precede an absolute path).
   const labelled = /^[A-Za-z]:[\\/]/.test(left) ? null : /^([\w.-]+):(.+)$/.exec(left);
   const [label, profileName] = labelled ? [labelled[1], labelled[2]!] : [undefined, left];
-  const { profile, path: profilePath } = loadProfile(profileName);
-  const given = spec.slice(eq + 1);
+  const bin = spec.slice(eq + 1);
   // Empty most often means an unset shell variable (`tsc7=$TSGO`), which would otherwise resolve to
   // the working directory and fail later with EISDIR.
-  if (!given) throw new InputError(`side ${JSON.stringify(spec)}: no binary path after "=" (an unset shell variable?)`);
+  if (!bin.trim()) throw new InputError(`side ${JSON.stringify(spec)}: no binary path after "=" (an unset shell variable?)`);
+  return { label, profileName, bin };
+}
+
+// Binds `profile=bin` (or `label:profile=bin`) into a side. The label defaults to the profile name.
+export async function bindSide(spec: string, role: Role, opts: BindOptions = {}): Promise<Side> {
+  const envPolicy = opts.env ?? DEFAULT_ENV_POLICY;
+  const { label, profileName, bin: given } = parseSideSpec(spec);
+  const { profile, path: profilePath } = loadProfile(profileName);
   const bin = resolve(given);
   if (!existsSync(bin)) throw new InputError(`side ${JSON.stringify(spec)}: no binary at ${bin}`);
   if (statSync(bin).isDirectory()) throw new InputError(`side ${JSON.stringify(spec)}: ${bin} is a directory, not a binary`);

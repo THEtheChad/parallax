@@ -130,6 +130,15 @@ test("input errors: what the user gave is wrong, one line without the PARALLAX_D
     [["bench", "--project", project, "--ref", "tsc7=", "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: side "tsc7=": no binary path after "=" \(an unset shell variable\?\)\n$/],
     [["bench", "--project", project, "--ref", `tsc7=${base}`, "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: side "tsc7=.*": .* is a directory, not a binary\n$/],
     [[...bench().slice(0, -2), "--out", full, "--threads", "default"], /^error: bundle directory .* exists and is not empty\n$/],
+    // An empty value (an unset shell variable) is refused for every option, not read as 0 or as the
+    // working directory; a side's syntax is checked before anything runs, for each --cand.
+    [bench("--warmup="), /^error: --warmup is empty; it wants <n> \(an unset shell variable\?\)\n/],
+    [bench("--max-busy-cores", " "), /^error: --max-busy-cores is empty; it wants <cores> /],
+    [[...bench().slice(0, -2), "--out", ""], /^error: --out is empty; it wants <dir> /],
+    [bench("--pass-env", ""), /^error: --pass-env is empty; it wants NAME /],
+    [bench("--cand", "again:tsc7="), /^error: side "again:tsc7=": no binary path after "=" /],
+    [["bench", "--cand", "again"], /^error: side "again": want <profile>=<binary> /],
+    [["bench-summary", ""], /^error: an argument is empty \(an unset shell variable\?\)\n/],
   ];
   for (const [args, want] of cases) {
     const r = run(args);
