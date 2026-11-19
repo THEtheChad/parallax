@@ -39,6 +39,7 @@ import { parsePinning, pinCommand, type Pinning } from "../host/pinning.ts";
 import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
 import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
+import { warn, type LogFn } from "../log.ts";
 
 export interface BenchSettings {
   config: string;
@@ -97,7 +98,7 @@ export interface BenchOptions extends Partial<Omit<BenchSettings, "idle" | "gate
   cands: string[];
   idle?: Partial<IdleGate>;
   gates?: Partial<Gates>;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 const fmtMs = (ms: number): string => (ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(ms < 10 ? 1 : 0)} ms`);
@@ -182,12 +183,12 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state), ...calibration.notes]) {
     if (!note) continue;
     bundle.notes.push(note);
-    opts.log(`warning: ${note}`);
+    warn(opts.log, note);
   }
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root)) {
     const note = "the project is on the Windows disk, read from WSL through a slow file share: times include the share";
     bundle.notes.push(note);
-    opts.log(`warning: ${note}`);
+    warn(opts.log, note);
   }
   const save = (): void => writeJsonAtomic(join(dir, "bundle.json"), bundle);
   save();
@@ -221,12 +222,13 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     return rec;
   };
 
+  if (settings.warmup) opts.log(`warm-up: ${settings.warmup} run${settings.warmup === 1 ? "" : "s"} per side, not measured`);
   for (let w = 1; w <= settings.warmup; w++) for (const s of sides) await sample(s, 0, w, true);
   await runRounds({
     sides,
     runs: settings.runs,
     maxRuns: settings.maxRuns,
-    stop: () => settledAtLook(summarizeBenchRecords(bundle, writer.records as Records), settings, opts.log),
+    stop: (progress) => settledAtLook(summarizeBenchRecords(bundle, writer.records as Records), settings, opts.log, progress),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -234,7 +236,9 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     log: opts.log,
     run: async (side, round, attempt) => {
       const s = await sample(side, round, attempt, false);
-      return { cpuMs: s.cpuMs, failed: s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0, brief: fmtMs(s.wallMs) };
+      const failed = s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0;
+      const why = s.timedOut ? ", timed out" : s.exit.signal ? `, killed by ${s.exit.signal}` : s.crashSignals.length ? `, crashed (${s.crashSignals.join(", ")})` : "";
+      return { cpuMs: s.cpuMs, failed, brief: `${fmtMs(s.wallMs)} wall${s.cpuMs === null ? "" : `, ${fmtMs(s.cpuMs)} CPU`}${why}` };
     },
   });
   if (plan?.backend === "perf") {

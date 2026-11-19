@@ -34,6 +34,7 @@ import { runRounds, settledAtLook } from "../timing/rounds.ts";
 import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
 import { DEFAULT_GATES, type Gates, type RoundRecord } from "../timing/summary.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
+import { warn as warnLog, type LogFn } from "../log.ts";
 import { parsePinning, type Pinning } from "../host/pinning.ts";
 import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
 import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
@@ -98,7 +99,7 @@ export interface LspBenchOptions extends Partial<Omit<LspBenchSettings, "idle" |
   file?: string[];
   idle?: Partial<IdleGate>;
   gates?: Partial<Gates>;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 const fmtMs = (ms: number | null): string => (ms === null ? "-" : ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(ms < 10 ? 1 : 0)} ms`);
@@ -183,7 +184,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   };
   const warn = (note: string): void => {
     bundle.notes.push(note);
-    opts.log(`warning: ${note}`);
+    warnLog(opts.log, note);
   };
   if (settings.imports! > 0) {
     const names = importCandidates(readText(files[0]!), files.slice(1).map(readText), settings.imports!);
@@ -249,7 +250,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     sides,
     runs: settings.runs,
     maxRuns: settings.maxRuns,
-    stop: () => settledAtLook(summarizeLspBenchRecords(bundle, writer.records as Records), settings, opts.log),
+    stop: (progress) => settledAtLook(summarizeLspBenchRecords(bundle, writer.records as Records), settings, opts.log, progress),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,

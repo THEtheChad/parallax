@@ -20,6 +20,25 @@ pnpm check        # type-check and tests
 
 Node runs the TypeScript sources directly (type stripping); there is no build step.
 
+## Command line
+
+`parallax --help` lists the commands; `parallax <command> --help` (or `parallax help <command>`)
+prints one command's options with their defaults and an example. `parallax --version` prints the
+package version, the harness commit and the Node version.
+
+The report goes to stdout and the log to stderr, so `parallax bench ... > report.txt` keeps the
+report clean. The long-running commands (`lsp-diff`, `bench`, `lsp-bench`, `calibrate`, `suite run`)
+stamp each log line with the time since the start (`[41:02]`), log a line when each round starts and
+one per side as it finishes, and after each look say how much is left as a range: a sequential bench
+stops at the first look where every call is settled, so it may end at the next look or run to
+`--max-runs`. `--quiet` (`-q`) drops the progress and keeps warnings and errors.
+
+| exit status | meaning |
+| --- | --- |
+| 0 | clean: no differences, every session clean, every bench measured cleanly |
+| 1 | a finding: differences, an unclean session, a bench not measured cleanly (each command's `--help` says what it means there) |
+| 2 | a usage error (the message and the command's synopsis) or a harness error (one line; `PARALLAX_DEBUG=1` adds the stack) |
+
 ## Answer diff
 
 ```sh
