@@ -54,6 +54,7 @@ import { endPosition, languageId, maskNonCode, pickPositions, readText, type Pos
 import { TYPED } from "../session/script.ts";
 import { pinCommand, type Pinning } from "../host/pinning.ts";
 import { median, quantile } from "./stats.ts";
+import { warn, type LogFn } from "../log.ts";
 
 export const LSP_SESSION_ID = "parallax.lsp-timing/3";
 export const DEBOUNCE_MS = 500;
@@ -260,7 +261,7 @@ export interface RunLspTimingOptions {
   id: string;
   side: Side;
   spec: LspTimingSpec;
-  log?: (msg: string) => void;
+  log?: LogFn;
 }
 
 export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionResult> {
@@ -612,7 +613,7 @@ export async function runLspTiming(opts: RunLspTimingOptions): Promise<SessionRe
   } catch (e) {
     outcome = e instanceof ServerExited ? "crash" : e instanceof RequestTimeout ? "timeout" : "error";
     error = (e as Error).message;
-    opts.log?.(`${id}: ${outcome}: ${error}`);
+    warn(opts.log, `${id}: ${outcome}: ${error}`);
   }
   const { exit, clean } = await client.shutdown({ exitCodes: side.profile.shutdown?.exitCodes ?? [0] });
   stderr.end();

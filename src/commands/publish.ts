@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from "node:util";
 import { configDir } from "../host/config.ts";
 import { harnessInfo, type CorpusInfo, type HostInfo, type SideRecord } from "../bundle/bundle.ts";
 import { loadSuite, suiteProjectFor } from "../suite/suite.ts";
+import { warn, type LogFn } from "../log.ts";
 import { readBenchBundle, summarizeBenchRecords, type BenchBundle, type Records as BenchRecords } from "./bench.ts";
 import { readLspBenchBundle, summarizeLspBenchRecords, type LspBenchBundle, type Records as LspRecords } from "./lspBench.ts";
 
@@ -91,7 +92,7 @@ export interface PublishOptions {
   out: string;
   // Publish a bundle made by a harness with uncommitted changes (its summary cannot be checked).
   allowDirty?: boolean;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 export function publish(opts: PublishOptions): { file: string; result: PublishedResult } {
@@ -101,7 +102,7 @@ export function publish(opts: PublishOptions): { file: string; result: Published
   if (!bundle.harness.gitCommit || bundle.harness.gitDirty) {
     const why = bundle.harness.gitCommit ? "had uncommitted changes" : "was not a git checkout";
     if (!opts.allowDirty) throw new Error(`the harness that made this bundle ${why}, so no one can recompute its summary; pass --allow-dirty to publish it anyway`);
-    opts.log(`warning: the harness ${why}; the result cannot be verified`);
+    warn(opts.log, `the harness ${why}; the result cannot be verified`);
   }
   const records = readRecords(opts.bundleDir);
   const { hostname: _hostname, ...host } = bundle.host;

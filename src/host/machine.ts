@@ -8,6 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { cpus, getPriority, loadavg, platform, uptime } from "node:os";
+import { warn, type LogFn } from "../log.ts";
 
 export interface CpuSnapshot {
   // performance.now() at the snapshot.
@@ -142,28 +143,47 @@ export interface IdleGate {
 
 export const DEFAULT_IDLE_GATE: IdleGate = { maxBusyCores: 1.5, windowMs: 1000, timeoutMs: 300_000, bootSettleS: 300 };
 
-export async function waitForIdle(gate: IdleGate, log?: (msg: string) => void): Promise<IdleWait> {
+// Progress while waiting: one line when the wait starts, then one every IDLE_LOG_EVERY_MS (nothing
+// is timed during the wait, so these cost the measurement nothing); a warning when it times out.
+const IDLE_LOG_EVERY_MS = 30_000;
+
+export async function waitForIdle(gate: IdleGate, log?: LogFn, logEveryMs = IDLE_LOG_EVERY_MS): Promise<IdleWait> {
   const t0 = performance.now();
   let bootSettleWaitedMs = 0;
   const settle = gate.bootSettleS - uptime();
   if (settle > 0) {
     log?.(`machine up ${Math.round(uptime())} s; waiting ${Math.ceil(settle)} s to settle after boot`);
-    await sleep(settle * 1000);
+    // In steps, to say how much of the wait is left.
+    for (let left = settle * 1000; left > 0; left -= logEveryMs) {
+      await sleep(Math.min(left, logEveryMs));
+      if (left > logEveryMs) log?.(`  settling after boot: ${Math.ceil((left - logEveryMs) / 1000)} s left`);
+    }
     bootSettleWaitedMs = performance.now() - t0;
   }
+  const t1 = performance.now();
   let w = await busyCores(gate.windowMs);
-  let said = false;
-  while (w.machineCores - w.selfCpuMs / w.wallMs > gate.maxBusyCores && performance.now() - t0 < gate.timeoutMs) {
-    if (!said) log?.(`waiting for the machine to go idle (${w.machineCores.toFixed(2)} cores busy, limit ${gate.maxBusyCores})`);
-    said = true;
+  const busyOf = (x: CpuWindow): number => x.machineCores - x.selfCpuMs / x.wallMs;
+  let lastSaid: number | null = null;
+  while (busyOf(w) > gate.maxBusyCores && performance.now() - t0 < gate.timeoutMs) {
+    const waited = performance.now() - t0;
+    if (lastSaid === null) {
+      log?.(`waiting for the machine to go idle (${busyOf(w).toFixed(2)} cores busy, limit ${gate.maxBusyCores}; gives up after ${Math.round(gate.timeoutMs / 1000)} s)`);
+      lastSaid = waited;
+    } else if (waited - lastSaid >= logEveryMs) {
+      log?.(`  still waiting for idle: ${busyOf(w).toFixed(2)} cores busy (limit ${gate.maxBusyCores}), ${Math.round(waited / 1000)} of ${Math.round(gate.timeoutMs / 1000)} s`);
+      lastSaid = waited;
+    }
     w = await busyCores(gate.windowMs);
   }
-  const busy = w.machineCores - w.selfCpuMs / w.wallMs;
+  const busy = busyOf(w);
+  const timedOut = busy > gate.maxBusyCores;
+  if (timedOut) warn(log, `the machine stayed busy (${busy.toFixed(2)} cores, limit ${gate.maxBusyCores}) for the whole ${Math.round(gate.timeoutMs / 1000)} s idle timeout; the round runs anyway and is rejected`);
+  else if (lastSaid !== null) log?.(`  idle after ${Math.round((performance.now() - t1) / 1000)} s`);
   return {
     waitedMs: performance.now() - t0,
     busyCores: busy,
     pressure: w.pressure,
-    timedOut: busy > gate.maxBusyCores,
+    timedOut,
     uptimeS: Math.round(uptime()),
     bootSettleWaitedMs,
   };

@@ -13,6 +13,7 @@ import { METRICS, sessionFailed, type LspBenchSummary, type SessionRecord } from
 import { acceptRounds, refFor, sampleFailed, type BenchSummary, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
 import { bench, type BenchBundle, type BenchOptions } from "./bench.ts";
 import { lspBench, type LspBenchBundle, type LspBenchOptions } from "./lspBench.ts";
+import { warn } from "../log.ts";
 
 export const DEFAULT_CALIBRATION_RUNS = 9;
 
@@ -68,7 +69,7 @@ export async function calibrate(opts: CalibrateOptions): Promise<{ dir: string; 
   writeJsonAtomic(join(r.dir, "calibration.json"), calibration);
   // A calibration whose bench was not measured cleanly (too few rounds, a crash) says nothing reliable.
   const file = save && r.summary.clean ? saveCalibration(calibration) : null;
-  if (save && !r.summary.clean) opts.log("warning: the A/A bench was not measured cleanly; the calibration is in the bundle but not kept for later benches");
+  if (save && !r.summary.clean) warn(opts.log, "the A/A bench was not measured cleanly; the calibration is in the bundle but not kept for later benches");
   return { dir: r.dir, calibration, file };
 }
 

@@ -50,6 +50,12 @@ named with it is where.
 
 Before the rounds each side runs `--warmup` (1) times untimed, so the file cache is warm for all.
 
+The progress log (stderr) has a line when a round starts, one per side as it finishes and one with
+the canaries, outside load and verdict. The per-side lines are written between sides, never while one
+is timed; they fall inside the round's CPU window, where they count as the harness's own CPU, which
+outside load already leaves out. The idle wait logs when it starts and every 30 s after, also
+outside any timed work.
+
 ## Thread modes
 
 Every side runs in two modes (`--threads both`, the default; `src/profile/profile.ts`):
