@@ -3,8 +3,9 @@
 
 import { SETTLED } from "../timing/stats.ts";
 import type { BenchSummary } from "../timing/summary.ts";
-import { callText, intervalColumn, intervalFields, mib, ms, plural, ratio, roundsLines, spreadText, timingCsv, type TimingCsvRow } from "./common.ts";
+import { verdictTone, callText, intervalColumn, intervalFields, mib, ms, plural, ratio, roundsLines, spreadText, timingCsv, type TimingCsvRow } from "./common.ts";
 import { line, toText, type Block, type Report } from "./model.ts";
+import type { Paint } from "../style.ts";
 
 const outputText = (x: BenchSummary["sides"][number]): string =>
   !x.outputStable ? `UNSTABLE (${x.outputs})` : x.outputMatchesRef === null ? "ref" : x.outputMatchesRef ? "same" : "DIFFERENT";
@@ -79,11 +80,11 @@ export function benchReport(s: BenchSummary): Report {
     const sp = intervalColumn("single-threaded / default wall", s.speedups.map((x) => x.ratio), ratio);
     blocks.push({ kind: "table", header: ["parallel speedup", sp.header], rows: s.speedups.map((x, i) => [x.base, sp.cells[i]!]) });
   }
-  blocks.push({ kind: "verdict", text: benchVerdict(s) });
+  blocks.push({ kind: "verdict", text: benchVerdict(s), tone: verdictTone(benchVerdict(s)) });
   return { title: "parallax bench", blocks };
 }
 
-export const renderBenchSummary = (s: BenchSummary): string => toText(benchReport(s));
+export const renderBenchSummary = (s: BenchSummary, paint?: Paint): string => toText(benchReport(s), paint);
 
 // One CSV, long format, a row per figure (README lists the kinds): `side` (each side's median wall and
 // CPU with their interval, and peak RSS), `comparison` (a candidate against its reference: both

@@ -17,7 +17,7 @@
 
 import type { JsonlWriter } from "../bundle/lines.ts";
 import { cpuSnapshot, cpuWindow, outsideCores, waitForIdle, type IdleGate } from "../host/machine.ts";
-import { fmtDuration, fmtDurationRange, warn, type LogFn } from "../log.ts";
+import { fmtDuration, fmtDurationRange, status, warn, type LogFn } from "../log.ts";
 import { runCanary } from "./canary.ts";
 import { lookPoints, type LookPlan } from "./stats.ts";
 import { judgeRound, type Gates, type RoundRecord } from "./summary.ts";
@@ -62,45 +62,57 @@ export async function runRounds<S extends { label: string }>(o: RoundsOptions<S>
   // against the bench's fastest canary, so it can only accept fewer.
   let accepted = 0;
   const t0 = performance.now();
-  for (let round = 1; round <= maxRuns; round++) {
-    if (round > o.runs && o.stop?.({ done: round - 1, elapsedMs: performance.now() - t0 })) break;
-    const order = round % 2 ? o.sides : [...o.sides].reverse();
-    for (let attempt = 1; attempt <= o.attempts; attempt++) {
-      o.log(`round ${round}.${attempt} (${accepted} accepted, need ${need})${attempt > 1 ? ": again, the last try was disturbed" : ""}`);
-      const idle = await waitForIdle(o.idle, o.log);
-      const before = cpuSnapshot();
-      const canaryBeforeMs = runCanary().ms;
-      const results: { side: S; r: SideRun }[] = [];
-      for (const side of order) {
-        const r = await o.run(side, round, attempt);
-        results.push({ side, r });
-        o.log(`  ${side.label.padEnd(width)}  ${r.brief}`);
+  try {
+    await rounds();
+  } finally {
+    status(o.log, null);
+  }
+
+  async function rounds(): Promise<void> {
+    for (let round = 1; round <= maxRuns; round++) {
+      if (round > o.runs && o.stop?.({ done: round - 1, elapsedMs: performance.now() - t0 })) break;
+      const order = round % 2 ? o.sides : [...o.sides].reverse();
+      for (let attempt = 1; attempt <= o.attempts; attempt++) {
+        o.log(`round ${round}.${attempt} (${accepted} accepted, need ${need})${attempt > 1 ? ": again, the last try was disturbed" : ""}`);
+        const idle = await waitForIdle(o.idle, o.log);
+        const before = cpuSnapshot();
+        const canaryBeforeMs = runCanary().ms;
+        const results: { side: S; r: SideRun }[] = [];
+        // What runs now and what is left, under the log on a terminal (written here, between sides, so
+        // nothing redraws while a side is timed).
+        const left = round > 1 ? ` · ${describeLeft(roundsLeft(plan, round - 1, accepted, Boolean(o.stop)), performance.now() - t0, round - 1)}` : "";
+        for (const [i, side] of order.entries()) {
+          status(o.log, `round ${round}.${attempt} · ${side.label} (${i + 1} of ${order.length}) · ${accepted} accepted, need ${need}${left}`);
+          const r = await o.run(side, round, attempt);
+          results.push({ side, r });
+          o.log(`  ${side.label.padEnd(width)}  ${r.brief}`);
+        }
+        const canaryAfterMs = runCanary().ms;
+        const window = cpuWindow(before, cpuSnapshot());
+        const cpu = results.every(({ r }) => r.cpuMs !== null) ? results.reduce((t, { r }) => t + r.cpuMs!, 0) : null;
+        fastestCanary = Math.min(fastestCanary, canaryBeforeMs, canaryAfterMs);
+        const partial = { idle, outsideCores: outsideCores(window, cpu), canaryBeforeMs, canaryAfterMs };
+        const rejected = judgeRound(partial, fastestCanary, o.gates);
+        const rec: RoundRecord = { type: "round", round, attempt, order: order.map((s) => s.label), window, ...partial, rejected };
+        await o.writer.write(rec);
+        const failed = results.filter(({ r }) => r.failed);
+        const other = partial.outsideCores === null ? "" : `, other programs ${partial.outsideCores.toFixed(2)} cores`;
+        const verdict = failed.length ? "failed" : rejected.length ? `rejected: ${rejected.join("; ")}` : "accepted";
+        o.log(`  canary ${canaryBeforeMs.toFixed(1)}/${canaryAfterMs.toFixed(1)} ms${other}: ${verdict}`);
+        if (failed.length) {
+          warn(o.log, `round ${round}: ${failed.map(({ side }) => side.label).join(", ")} failed; not retried`);
+          break;
+        }
+        if (!rejected.length) {
+          accepted++;
+          break;
+        }
       }
-      const canaryAfterMs = runCanary().ms;
-      const window = cpuWindow(before, cpuSnapshot());
-      const cpu = results.every(({ r }) => r.cpuMs !== null) ? results.reduce((t, { r }) => t + r.cpuMs!, 0) : null;
-      fastestCanary = Math.min(fastestCanary, canaryBeforeMs, canaryAfterMs);
-      const partial = { idle, outsideCores: outsideCores(window, cpu), canaryBeforeMs, canaryAfterMs };
-      const rejected = judgeRound(partial, fastestCanary, o.gates);
-      const rec: RoundRecord = { type: "round", round, attempt, order: order.map((s) => s.label), window, ...partial, rejected };
-      await o.writer.write(rec);
-      const failed = results.filter(({ r }) => r.failed);
-      const other = partial.outsideCores === null ? "" : `, other programs ${partial.outsideCores.toFixed(2)} cores`;
-      const verdict = failed.length ? "failed" : rejected.length ? `rejected: ${rejected.join("; ")}` : "accepted";
-      o.log(`  canary ${canaryBeforeMs.toFixed(1)}/${canaryAfterMs.toFixed(1)} ms${other}: ${verdict}`);
-      if (failed.length) {
-        warn(o.log, `round ${round}: ${failed.map(({ side }) => side.label).join(", ")} failed; not retried`);
-        break;
+      // One early estimate, so a long run says how long it will be before its first look.
+      if (round === 1 && maxRuns > 1) {
+        const left = roundsLeft(plan, 1, accepted, Boolean(o.stop));
+        o.log(`a round takes about ${fmtDuration(performance.now() - t0)}; ${describeLeft(left, performance.now() - t0)}`);
       }
-      if (!rejected.length) {
-        accepted++;
-        break;
-      }
-    }
-    // One early estimate, so a long run says how long it will be before its first look.
-    if (round === 1 && maxRuns > 1) {
-      const left = roundsLeft(plan, 1, accepted, Boolean(o.stop));
-      o.log(`a round takes about ${fmtDuration(performance.now() - t0)}; ${describeLeft(left, performance.now() - t0)}`);
     }
   }
 }

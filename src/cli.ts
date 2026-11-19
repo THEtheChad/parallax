@@ -27,6 +27,7 @@ import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
 import { formatBench, formatCalibration, formatLspBench, formatSummary, FORMATS, parseFormat, type Format } from "./report/render.ts";
 import { createLog, fmtElapsed, type Log } from "./log.ts";
+import { paintFor, type Paint } from "./style.ts";
 import { InputError, readJsonFile } from "./errors.ts";
 import { CompareError, compareResults } from "./commands/compareResults.ts";
 import { comparisonCsv, comparisonMarkdown, renderComparison } from "./report/compareResults.ts";
@@ -294,7 +295,7 @@ const COMMANDS: Command[] = [
         log,
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
-      console.log(formatBench(r.summary, format));
+      console.log(formatBench(r.summary, format, outPaint(format)));
       return decide(r.summary.clean, policy && evaluateBenchPolicy(r.summary, policy));
     },
   },
@@ -325,7 +326,7 @@ const COMMANDS: Command[] = [
         log,
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
-      console.log(formatLspBench(r.summary, format));
+      console.log(formatLspBench(r.summary, format, outPaint(format)));
       return decide(r.summary.clean, policy && evaluateLspPolicy(r.summary, policy));
     },
   },
@@ -377,7 +378,7 @@ const COMMANDS: Command[] = [
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
       // The other formats carry the calibration alone; text and md say where it was kept.
       if (r.file && (format === "json" || format === "csv")) log(`kept for later benches on this host setup: ${r.file}`);
-      console.log(formatCalibration(r.calibration, r.file, format));
+      console.log(formatCalibration(r.calibration, r.file, format, outPaint(format)));
       return r.file || o["no-save"] ? 0 : 1;
     },
   },
@@ -399,12 +400,12 @@ const COMMANDS: Command[] = [
       if (kind === "lsp-bench") {
         const bundle = readLspBenchBundle(dir);
         const summary = summarizeLspBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
-        console.log(formatLspBench(summary, format));
+        console.log(formatLspBench(summary, format, outPaint(format)));
         return decide(summary.clean, policy && evaluateLspPolicy(summary, policy));
       }
       const bundle = readBenchBundle(dir);
       const summary = summarizeBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
-      console.log(formatBench(summary, format));
+      console.log(formatBench(summary, format, outPaint(format)));
       return decide(summary.clean, policy && evaluateBenchPolicy(summary, policy));
     },
   },
@@ -461,13 +462,13 @@ const COMMANDS: Command[] = [
         });
       } catch (e) {
         if (!(e instanceof CompareError)) throw e;
-        console.error(`error: compare-results: ${e.message}`);
+        console.error(`${errPaint()("bad", "error:")} compare-results: ${e.message}`);
         return 2;
       }
-      console.log(format === "json" ? JSON.stringify(c, null, 2) : format === "md" ? comparisonMarkdown(c) : format === "csv" ? comparisonCsv(c) : renderComparison(c));
+      console.log(format === "json" ? JSON.stringify(c, null, 2) : format === "md" ? comparisonMarkdown(c) : format === "csv" ? comparisonCsv(c) : renderComparison(c, outPaint(format)));
       // CSV has no place for the decision (json carries it as a field; text and md print it): it goes to
       // stderr, as for bench.
-      if (format === "csv" && c.policy) console.error(renderDecision(c.policy));
+      if (format === "csv" && c.policy) console.error(paintDecision(renderDecision(c.policy), c.policy.passed));
       return exitStatus(true, c.policy);
     },
   },
@@ -614,7 +615,7 @@ const COMMANDS: Command[] = [
 ];
 
 function printSummary(summary: Summary, format: Format): number {
-  console.log(formatSummary(summary, format));
+  console.log(formatSummary(summary, format, outPaint(format)));
   return summary.clean ? 0 : 1;
 }
 
@@ -631,9 +632,18 @@ function policyOption(o: Values, kind: "cli-bench" | "lsp-bench"): Policy | null
 // The policy's decision goes to stderr after the report, even with --quiet: CI logs show it, and
 // stdout stays the report alone (a --format json consumer reads stdout).
 function decide(clean: boolean, decision: PolicyDecision | null): number {
-  if (decision) console.error(renderDecision(decision, clean));
+  if (decision) console.error(paintDecision(renderDecision(decision, clean), decision.passed));
   return exitStatus(clean, decision);
 }
+
+// Colour for the terminal (src/style.ts): stdout for the text report, stderr for the log, errors and
+// the policy's decision. Each is plain unless its own stream is a terminal that takes colour.
+const outPaint = (format: Format): Paint | undefined => (format === "text" ? paintFor(process.stdout) : undefined);
+let stderrPaint: Paint | undefined;
+const errPaint = (): Paint => (stderrPaint ??= paintFor(process.stderr));
+// The decision's first line names the outcome ("passed" / "FAILED (2 failures)"): that word in colour.
+const paintDecision = (text: string, passed: boolean): string =>
+  text.replace(/: (passed|FAILED \([^)]*\))/, (_m, w: string) => `: ${errPaint()(passed ? "good" : "bad", w)}`);
 
 function formatOption(o: Values): Format {
   try {
@@ -830,7 +840,14 @@ async function runCommand(c: Command, args: string[]): Promise<number> {
   }
   const missing = all.filter((x) => x.required && (values[x.name] === undefined || (Array.isArray(values[x.name]) && !(values[x.name] as string[]).length)));
   if (missing.length) throw new UsageError(`${c.name} needs ${list(missing.map((x) => `--${x.name}`))}`, c);
-  const log = createLog({ quiet: values.quiet === true, elapsed: c.longRunning === true });
+  const log = createLog({
+    quiet: values.quiet === true,
+    elapsed: c.longRunning === true,
+    paint: errPaint(),
+    // A status line only where someone watches: stderr a terminal that can erase a line (not
+    // TERM=dumb), and a command that runs for a while.
+    ...(c.longRunning && process.stderr.isTTY && process.env.TERM !== "dumb" ? { status: { raw: (s: string) => void process.stderr.write(s), columns: () => process.stderr.columns || 80 } } : {}),
+  });
   try {
     return await c.run({ values, positionals, log });
   } catch (e) {
@@ -1067,16 +1084,16 @@ const gateOptions = (o: Values) => defined({ maxOutsideCores: num(o, "max-outsid
 function report(e: unknown): void {
   if (e instanceof UsageError) {
     const c = e.command;
-    console.error(`error: ${e.message}${c ? `\n\n${usageHint(c)}` : ""}`);
+    console.error(`${errPaint()("bad", "error:")} ${e.message}${c ? `\n\n${usageHint(c)}` : ""}`);
     return;
   }
   if (e instanceof NotFoundError) {
-    console.error(`error: ${e.message}`);
+    console.error(`${errPaint()("bad", "error:")} ${e.message}`);
     return;
   }
   // A mistake in what the user gave: the message is the whole story, so no hint to look at a stack.
   if (e instanceof InputError) {
-    console.error(`error: ${process.env.PARALLAX_DEBUG === "1" ? (e.stack ?? e.message) : e.message}`);
+    console.error(`${errPaint()("bad", "error:")} ${process.env.PARALLAX_DEBUG === "1" ? (e.stack ?? e.message) : e.message}`);
     return;
   }
   const err = e instanceof Error ? e : new Error(String(e));
@@ -1084,11 +1101,11 @@ function report(e: unknown): void {
   const code = (err as NodeJS.ErrnoException).code;
   const path = (err as NodeJS.ErrnoException).path;
   if (code === "ENOENT" && path && process.env.PARALLAX_DEBUG !== "1") {
-    console.error(`error: ${path} not found`);
+    console.error(`${errPaint()("bad", "error:")} ${path} not found`);
     return;
   }
-  if (process.env.PARALLAX_DEBUG === "1") console.error(`error: ${err.stack ?? err.message}`);
-  else console.error(`error: ${err.message} (PARALLAX_DEBUG=1 shows the stack)`);
+  if (process.env.PARALLAX_DEBUG === "1") console.error(`${errPaint()("bad", "error:")} ${err.stack ?? err.message}`);
+  else console.error(`${errPaint()("bad", "error:")} ${err.message} (PARALLAX_DEBUG=1 shows the stack)`);
 }
 
 // Exit once stdout and stderr have been written out. process.exit right after console.log drops

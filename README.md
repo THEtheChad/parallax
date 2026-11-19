@@ -33,6 +33,15 @@ one per side as it finishes, and after each look say how much is left as a range
 stops at the first look where every call is settled, so it may end at the next look or run to
 `--max-runs`. `--quiet` (`-q`) drops the progress and keeps warnings and errors.
 
+On a terminal, the text report and the log are in colour (calls: faster green, slower red,
+unresolved yellow; outputs that differ, failed states and errors red; warnings yellow), and a long
+run keeps one status line under the log saying what runs now and what is left (`round 7.2 · tsrs (3 of
+8) · up to 9 more rounds, about 4-40 min left`), rewritten between sides only, never while one is
+timed. Anywhere else (a pipe, a file, a CI log) the output is plain text with no escape codes, and
+`--format md|json|csv` never has them. Node decides what is a terminal: `NO_COLOR=1` turns colour off,
+`FORCE_COLOR=1` turns it on (for a CI log that renders it); the status line needs a real terminal
+either way.
+
 | exit status | meaning |
 | --- | --- |
 | 0 | clean: no differences, every session clean, every bench measured cleanly |

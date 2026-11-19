@@ -3,20 +3,33 @@
 //   progress  `log(msg)`: what the harness is doing; silenced by --quiet
 //   warnings  `log.warn(msg)`: something that may make a result wrong or a run fail; always shown
 //
+//   status    `log.status(text)`: one line under the log saying what runs now ("round 7.2 · tsrs (3 of
+//             8) · about 4-40 min left"), rewritten in place; only on a terminal, never in a file or
+//             a CI log, and only when the harness calls it (between sides: no timer, so nothing
+//             redraws while a side is timed)
+//
 // Commands take a `LogFn`: any plain `(msg) => void` works (tests pass one), and `warn(log, msg)`
 // falls back to writing "warning: msg" through it when it has no warn channel of its own.
 
-export type LogFn = ((msg: string) => void) & { warn?: (msg: string) => void };
+import { plain, type Paint } from "./style.ts";
+
+export type LogFn = ((msg: string) => void) & { warn?: (msg: string) => void; status?: (text: string | null) => void };
 
 export interface Log {
   (msg: string): void;
   warn(msg: string): void;
+  status(text: string | null): void;
 }
 
 export function warn(log: LogFn | undefined, msg: string): void {
   if (!log) return;
   if (log.warn) log.warn(msg);
   else log(`warning: ${msg}`);
+}
+
+// Sets (or with null clears) the status line, where the log has one.
+export function status(log: LogFn | undefined, text: string | null): void {
+  log?.status?.(text);
 }
 
 export interface LogOptions {
@@ -27,21 +40,45 @@ export interface LogOptions {
   elapsed?: boolean;
   write?: (line: string) => void;
   now?: () => number;
+  // Colours for a terminal (style.ts paintFor(process.stderr)); plain by default.
+  paint?: Paint;
+  // A status line (only where stderr is a terminal): `raw` writes without a newline, `columns` is the
+  // terminal's width (the line is cut to fit, so it never wraps and can be rewritten in place).
+  status?: { raw: (s: string) => void; columns: () => number };
 }
+
+// Back to the start of the line and erase it.
+const ERASE = "\r\x1b[2K";
 
 export function createLog(o: LogOptions = {}): Log {
   const write = o.write ?? ((line: string) => process.stderr.write(`${line}\n`));
   const now = o.now ?? (() => performance.now());
+  const paint = o.paint ?? plain;
   const t0 = now();
-  const emit = (msg: string): void => {
-    const stamp = o.elapsed ? `[${fmtElapsed(now() - t0)}] ` : "";
+  // The status line on screen, painted, or null.
+  let shown: string | null = null;
+  const emit = (msg: string, warning = false): void => {
+    if (shown !== null) o.status!.raw(ERASE);
+    const stamp = o.elapsed ? paint("dim", `[${fmtElapsed(now() - t0)}]`) + " " : "";
+    const lines = msg.split("\n");
+    if (warning) lines[0] = `${paint("warn", "warning:")} ${lines[0]}`;
     // Each line of a multi-line message gets its own stamp; blank lines (section breaks) stay blank.
-    for (const line of msg.split("\n")) write(line && stamp + line);
+    for (const line of lines) write(line && stamp + line);
+    if (shown !== null) o.status!.raw(shown);
   };
   const log = ((msg: string) => {
     if (!o.quiet) emit(msg);
   }) as Log;
-  log.warn = (msg: string) => emit(`warning: ${msg}`);
+  log.warn = (msg: string) => emit(msg, true);
+  log.status = (text: string | null) => {
+    if (!o.status || o.quiet) return;
+    if (shown !== null) o.status.raw(ERASE);
+    const stamp = o.elapsed ? `[${fmtElapsed(now() - t0)}] ` : "";
+    const full = text === null ? null : stamp + text;
+    const width = Math.max(20, o.status.columns() - 1);
+    shown = full === null ? null : paint("dim", full.length > width ? `${full.slice(0, width - 1)}…` : full);
+    if (shown !== null) o.status.raw(shown);
+  };
   return log;
 }
 
