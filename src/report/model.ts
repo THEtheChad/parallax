@@ -72,7 +72,8 @@ export function toMarkdown(r: Report): string {
   return out.join("\n");
 }
 
-// RFC 4180: a field with a comma, quote or line break is quoted, quotes doubled. null is empty.
+// RFC 4180 quoting: a field with a comma, quote or line break is quoted, quotes doubled; null is empty.
+// Lines end in LF, not the RFC's CRLF, as most tools write and every CSV reader accepts.
 export function toCsv(header: string[], rows: (string | number | null)[][]): string {
   const field = (v: string | number | null): string => {
     const s = v === null ? "" : String(v);

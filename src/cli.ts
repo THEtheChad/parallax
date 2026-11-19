@@ -269,7 +269,7 @@ const COMMANDS: Command[] = [
       "parallax bench --project ~/src/hono --config tsconfig.build.json --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/hono-bench",
       "parallax bench ... --threads default --runs 9 --max-runs 21 --resolution 0.02",
     ],
-    exit: "0 measured cleanly, 1 not measured cleanly (too few rounds, a side failed), 2 usage or harness error",
+    exit: "0 measured cleanly (and the --fail-on policy passed), 1 not measured cleanly (too few rounds, a side failed), 2 usage or harness error, 3 measured cleanly but the --fail-on policy failed",
     run: async ({ values: o, log }) => {
       const format = formatOption(o);
       const policy = policyOption(o, "cli-bench");
@@ -300,7 +300,7 @@ const COMMANDS: Command[] = [
       "parallax lsp-bench --project ~/src/umami --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/umami-lsp",
       "parallax lsp-bench ... --threads default --long-edits 0 --imports 0",
     ],
-    exit: "0 measured cleanly, 1 not measured cleanly (too few rounds, a session failed), 2 usage or harness error",
+    exit: "0 measured cleanly (and the --fail-on policy passed), 1 not measured cleanly (too few rounds, a session failed), 2 usage or harness error, 3 measured cleanly but the --fail-on policy failed",
     run: async ({ values: o, log }) => {
       const format = formatOption(o);
       const policy = policyOption(o, "lsp-bench");
@@ -379,7 +379,7 @@ const COMMANDS: Command[] = [
     positionals: true,
     options: [{ title: "gates", opts: MACHINE.opts.filter((x) => x.name.startsWith("max-") && x.name !== "max-busy-cores").map((x) => ({ ...x, default: "the bundle's" })) }, POLICY("both"), REPORT],
     examples: ["parallax bench-summary /tmp/hono-bench --max-outside-cores 0.5"],
-    exit: "0 measured cleanly, 1 not measured cleanly, 2 usage or harness error",
+    exit: "0 measured cleanly (and the --fail-on policy passed), 1 not measured cleanly, 2 usage or harness error, 3 measured cleanly but the --fail-on policy failed",
     run: async ({ values: o, positionals }) => {
       const format = formatOption(o);
       const dir = oneBundle("bench-summary", positionals, "bundle.json");
@@ -452,6 +452,9 @@ const COMMANDS: Command[] = [
         return 2;
       }
       console.log(format === "json" ? JSON.stringify(c, null, 2) : format === "md" ? comparisonMarkdown(c) : format === "csv" ? comparisonCsv(c) : renderComparison(c));
+      // CSV has no place for the decision (json carries it as a field; text and md print it): it goes to
+      // stderr, as for bench.
+      if (format === "csv" && c.policy) console.error(renderDecision(c.policy));
       return exitStatus(true, c.policy);
     },
   },
@@ -822,7 +825,8 @@ const list = (xs: string[], and = "and"): string => (xs.length > 1 ? `${xs.slice
 // parseArgs's messages, in this CLI's words.
 function parseError(e: unknown, opts: Opt[]): string {
   const err = e as Error & { code?: string };
-  const name = /'(-[^' ]+)/.exec(err.message)?.[1];
+  // Node names an option with a short alias as '-q, --quiet': take the long name.
+  const name = /'(?:-[^-' ,], )?(-[^' ,]+)/.exec(err.message)?.[1];
   if (err.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && name) return `unknown option ${name}${didYouMean(name.replace(/^-+/, ""), opts.map((x) => x.name), "--")}`;
   if (err.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && name) {
     const opt = opts.find((x) => `--${x.name}` === name || (x.short && `-${x.short}` === name));
@@ -994,10 +998,24 @@ function report(e: unknown): void {
   else console.error(`error: ${err.message} (PARALLAX_DEBUG=1 shows the stack)`);
 }
 
+// Exit once stdout and stderr have been written out. process.exit right after console.log drops
+// whatever a pipe has not taken yet (a JSON report over 64 KiB reached a pipe truncated, exit 0); a
+// write's callback runs after every earlier write on that stream, so waiting on an empty one is enough.
+// It still exits rather than waiting for the event loop to empty: a server or timer left behind must
+// not keep the harness running.
+function exitAfterFlush(code: number): void {
+  let pending = 2;
+  const done = (): void => {
+    if (--pending === 0) process.exit(code);
+  };
+  process.stdout.write("", done);
+  process.stderr.write("", done);
+}
+
 main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
+  (code) => exitAfterFlush(code),
   (e: unknown) => {
     report(e);
-    process.exit(2);
+    exitAfterFlush(2);
   },
 );

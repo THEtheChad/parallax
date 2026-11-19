@@ -2,7 +2,7 @@
 // --version, and what --quiet leaves in the log.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -122,4 +122,24 @@ test("progress: stamped round lines with one line per side; --quiet keeps only w
   assert.doesNotMatch(quiet.stderr, /bundle /);
   assert.match(quiet.stderr, /warning: this machine has no noise calibration/);
   assert.match(quiet.stdout, /^side /m, "the report is unaffected");
+});
+
+test("a report bigger than a pipe's buffer reaches a slow reader whole", { timeout: 30_000 }, async () => {
+  // process.exit right after console.log used to drop what the pipe had not taken (64 KiB on Linux):
+  // a JSON report arrived cut short, with exit 0.
+  const dir = mkdtempSync(join(tmpdir(), "parallax-cli-big-"));
+  const pad = "x".repeat(300_000);
+  writeFileSync(join(dir, "summary.json"), JSON.stringify({ clean: true, pad }));
+  const child = spawn(process.execPath, [cli, "summary", dir, "--format", "json"], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.pause();
+  const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  // Read only after a while, so the child's writes outrun the pipe.
+  await new Promise((r) => setTimeout(r, 300));
+  const chunks: Buffer[] = [];
+  child.stdout.on("data", (c: Buffer) => chunks.push(c));
+  child.stdout.resume();
+  await new Promise((r) => child.stdout.on("end", r));
+  assert.equal(await exited, 0);
+  const out = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { pad: string };
+  assert.equal(out.pad.length, pad.length);
 });
