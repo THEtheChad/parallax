@@ -50,6 +50,12 @@ named with it is where.
 
 Before the rounds each side runs `--warmup` (1) times untimed, so the file cache is warm for all.
 
+The progress log (stderr) has a line when a round starts, one per side as it finishes and one with
+the canaries, outside load and verdict. The per-side lines are written between sides, never while one
+is timed; they fall inside the round's CPU window, where they count as the harness's own CPU, which
+outside load already leaves out. The idle wait logs when it starts and every 30 s after, also
+outside any timed work.
+
 ## Thread modes
 
 Every side runs in two modes (`--threads both`, the default; `src/profile/profile.ts`):
@@ -99,9 +105,17 @@ gave a "95%" interval excluding 1.)
 | call | when |
 | --- | --- |
 | `faster`, `slower` | the whole interval is on one side of 1, and the median differs from 1 by at least 1% |
-| `same ±r` | the whole interval lies within 1 ± r, the resolution: `--resolution` (5%), widened to `--resolution-ms` (1 ms) over the reference's figure where that is larger, so a 0.3 ms request is "same" within 1 ms, not within 5% of 0.3 ms |
+| `same ±r` | the whole interval lies within 1 ± r, the resolution: `--resolution` (5%), widened to `--resolution-ms` (1 ms) over the reference's figure where that is larger, so a 0.3 ms request is "same" within 1 ms, not within 5% of 0.3 ms (the report then says `same (within 1 ms)`, not the ±300% it works out to). Where the floor governs, an interval inside it is `same` even when it misses 1: 0.25 ms against 0.31 ms is a difference below what the bench can tell apart, not `faster`. Where the relative resolution governs, a clear difference inside it is still called (2% faster, surely, is worth saying) |
 | `unresolved` | none of these; more rounds would tell |
 | `too few rounds` | the interval cannot reach the confidence a call needs |
+
+Every metric is lower-is-better, and the stored call is `faster` or `slower` for all of them; the
+report words a CPU-time or memory metric's call `lower` or `higher` instead. The report's two
+percentages are different things: "calls at 95% confidence" is what this look required of an
+interval (see sequential rounds below), and "(96% interval)" in a column header is the coverage the
+intervals really have. Order statistics give coverage in discrete steps, so the interval used is the
+first step at or above what the call needs (96.9% at 6 rounds for 95%), or the whole range, below it,
+when there are too few rounds. Ratios are printed to three significant figures.
 
 **Sequential rounds.** A bench runs `--runs` (6) rounds and looks. If some comparison is unsettled
 (`unresolved` or `too few rounds`), it runs 3 more and looks again, up to `--max-runs` (15). Looking
@@ -117,6 +131,108 @@ which it is facing and spends rounds accordingly.
 
 **Noisy and failed.** A candidate with fewer than `--min-runs` (3) accepted rounds is `noisy`, with
 no figure. One whose run crashed, was killed or timed out (its own or the reference's) is `failed`.
+
+## A CI policy: `--fail-on`
+
+A bench that ran cleanly reports MEASURED and exits 0 whatever it found. That is right for a
+measurement and wrong for a gate, so `bench`, `lsp-bench` and `bench-summary` take a policy,
+evaluated on the summary after measuring (`src/timing/policy.ts`) and kept apart from whether the
+measurement was clean:
+
+| condition | fails when |
+| --- | --- |
+| `slower` | a candidate's call is `slower` (bench: wall time; lsp-bench: any compared metric, or only those named by `--fail-metrics <key,...>`) |
+| `output` | bench only: a side's output is DIFFERENT from the reference's, or UNSTABLE over its runs |
+| `unresolved` | a call is `unresolved` or `too few rounds`, or a candidate is `noisy`: the bench is not settled |
+
+`--fail-threshold R` (at least 1) narrows `slower` to calls whose whole interval is above R: with 1.10,
+a candidate fails only when it is surely more than 10% slower. Without it any `slower` call fails,
+and a `slower` call needs the median at least 1% above 1. A threshold is worth having because a
+candidate implementation 2% slower than the reference is often acceptable while 15% is not, and the
+interval, not the median, is what makes that safe to say: a median of 1.12 whose interval reaches
+down to 1.04 does not fail at 1.10.
+
+| exit | meaning |
+| --- | --- |
+| 0 | measured cleanly; the policy (if any) passed |
+| 1 | not measured cleanly; the policy is printed, but this decides |
+| 2 | usage or harness error |
+| 3 | measured cleanly; the policy failed |
+
+The decision (each failing candidate and metric, and why) is printed to stderr after the report, so it
+shows in CI logs and stdout stays the report alone for anything that parses it. The policy only reads
+calls; it never changes how they are made, so the false-call rates above still apply per comparison:
+a policy over many lsp-bench metrics fails by chance more often than one over a single metric (see
+the note at the end of "Language servers"), which `--fail-metrics` addresses.
+
+## Comparing two runs
+
+`parallax compare-results <old> <new>` (`src/commands/compareResults.ts`) answers "did the candidate
+get better or worse between these two runs?", for published results or bench and lsp-bench bundles,
+read back to their per-round records and judged with each run's own gates.
+
+**What is compared.** For each candidate present in both runs (and each compared lsp-bench metric),
+the per-round ratio to the in-run reference, old against new. The in-run reference cancels most of what
+differs between two runs (the machine's speed that day, its disk, a VM host's load), which absolute
+times would not. The answer is a ratio of ratios: `new/old 1.07x (1.02x..1.12x)` means the candidate is
+7% slower against its reference than it was. Each run's reference median is shown beside it, and only
+when both runs are from the same machine (the same machine id, or for bundles the same hostname and CPU)
+the candidate's own time new/old, labelled as such and never called.
+
+**The statistics** (`src/timing/shift.ts`). The two runs' rounds are independent samples, not pairs
+(round 3 of one has nothing to do with round 3 of the other), so the paired median interval does not
+apply. On the logs of the ratios (a slowdown by a factor is a shift in logs), the Hodges-Lehmann
+estimate is the median of all m·n differences new - old, and its interval is
+`[d(k), d(m·n+1-k)]` of the sorted differences, with the largest k whose coverage,
+`1 - 2·P(U <= k-1)`, reaches the confidence wanted; U is the Mann-Whitney statistic, whose exact
+distribution (no ties) is computed for any m and n. Like the median interval it assumes nothing about
+the distribution's shape, only that the two runs' ratios have the same shape, one shifted from the
+other. Turned back from logs, the estimate and interval are factors.
+
+**Calls**, by the bench's rules on the ratio of ratios: `worse` and `better` (the whole interval on one
+side of 1 and the estimate at least 1% from it), `same ±r` (the interval within 1 ± `--resolution`,
+5%, widened to `--resolution-ms`, 1 ms, over the old candidate's figure where that is larger: a change
+of F ms in the candidate moves the ratio of ratios by about F over its old time), `unresolved`, and
+`too few rounds` when even the whole range of differences cannot reach the confidence (3 rounds against
+3 cover at most 90%).
+
+**Multiplicity.** A report makes one comparison per candidate, mode and metric: 6 for a CLI bench of
+three candidates in both modes, over 100 for an lsp-bench. By default each is called at `--confidence`
+(95%), as bench calls each of its comparisons: a row's call is wrong at most one time in twenty, and
+between two identical runs about 5% of the rows can come out `better` or `worse` by chance. That is
+fine for reading a report, and for a gate on a few rows; a gate on an lsp-bench comparison's hundred
+rows would trip on chance alone (compare-results warns when `--fail-on` judges more than 10). Two
+remedies: `--metrics <key,...>` narrows the report to what the gate is for, and `--family-wise` splits
+the confidence over every row (Bonferroni: with 6 rows each interval is at 99.17%), so that any one
+false call anywhere has at most a 5% chance, whatever the dependence between rows (metrics of one
+session are correlated). The price is width: at 99.17% the narrowest 6-against-6 interval is nearly the
+whole range of differences, so `same ±5%` needs every pair of rounds across the runs within 5%, and
+6-round runs mostly come out `unresolved`; family-wise comparisons want 9 to 12 rounds per run. Each
+interval's header shows the coverage it really has (the exact distribution covers in steps, at or
+above the confidence asked for).
+
+**Refused and warned.** Runs of different kinds, or of different projects (repository or commit; the
+project name when a commit is unknown), are refused unless `--allow-project-change`: a change in the
+project would show up as a change in the candidate. Side labels present in only one run are listed and
+not compared. Warnings name a different machine (ratios carry over between machines far better than
+times, but not fully: a CPU can favour one implementation), a different harness commit (a change in
+how Parallax measures shows up too), settings that change the workload (threads, pinning, environment,
+the CLI config or the editor session), and any binary whose sha256 changed: for a candidate that is
+usually the point of the comparison; for the reference, every new ratio is to another binary.
+
+**Limits.** Each run's rounds are taken as independent draws from that run's conditions; two runs on
+one machine a day apart can still differ by more than either run's rounds show (a kernel or firmware
+update, a change in cooling), which is why the reference ratio, not the time, is compared, and why a same-machine
+absolute figure is shown only as context. Ties between ratios are rare but, where present, make the
+stated coverage approximate. A `same` call says the change is within the resolution, not that there is
+none.
+
+`--fail-on worse,unresolved` (and `--fail-threshold R` for `worse`) is the same policy for a
+comparison: exit 3 when a row is worse (surely above R), or when one is unresolved, too few rounds, or
+a candidate could not be compared because it was noisy or failed in either run. A call against a
+reference that changed between the runs (another label, or another binary) is marked `(ref changed)`:
+its ratio of ratios mixes the candidate's change with the reference's. `--format json` prints
+the whole comparison, the policy's decision included, as one object.
 
 ## The environment
 

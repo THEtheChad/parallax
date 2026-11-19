@@ -83,4 +83,21 @@ test("publish: no hostname or paths; the summary recomputes; an edited result fa
   forged.id = createHash("sha256").update(JSON.stringify(forged)).digest("hex").slice(0, 16);
   writeFileSync(file, JSON.stringify(forged));
   assert.deepEqual(verifyResult(file).problems, ["the summary is not what the records give"], "a re-hashed forgery is still caught");
+
+  // A result published before summaries carried the notes still verifies; one whose notes were
+  // edited does not.
+  const rehash = (r: Record<string, unknown>): void => {
+    delete r.id;
+    r.id = createHash("sha256").update(JSON.stringify(r)).digest("hex").slice(0, 16);
+    writeFileSync(file, JSON.stringify(r));
+  };
+  const older = JSON.parse(text);
+  assert.ok(Array.isArray(older.summary.notes));
+  delete older.summary.notes;
+  rehash(older);
+  assert.deepEqual(verifyResult(file).problems, []);
+  const renoted = JSON.parse(text);
+  renoted.summary.notes = ["all is well"];
+  rehash(renoted);
+  assert.deepEqual(verifyResult(file).problems, ["the summary is not what the records give"]);
 });

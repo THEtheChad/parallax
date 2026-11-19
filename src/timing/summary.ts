@@ -161,6 +161,10 @@ export interface BenchSummary {
   settled: boolean;
   // Counted runs per side, where a counter backend worked (absent in older summaries).
   counters?: { backend: string; sides: CounterSummary[] } | null;
+  // The bundle's notes: what about the machine or the run could bias a figure (no calibration, on
+  // battery, low priority, a project on a slow share...). The report shows them as warnings. Absent
+  // in older summaries; recomputing from an older bundle takes them from its bundle.json.
+  notes?: string[];
   clean: boolean;
 }
 
@@ -215,6 +219,8 @@ export interface SummarizeInput {
   accounting: string;
   // The counter backend the bench used ("none": no counted runs).
   counters?: string;
+  // The bundle's notes (absent: none recorded in the summary).
+  notes?: string[];
 }
 
 const figure = (xs: number[]): CounterFigure | null => {
@@ -331,7 +337,7 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       const state: CandidateState = anyFailed ? "failed" : pairs.length < input.minRounds ? "noisy" : "measured";
       const refWall = pairs.length ? median(pairs.map((p) => p.ref.wallMs)) : null;
       const same = sameWithin(resolution.relative, resolution.floorMs, refWall);
-      const call = state === "measured" && wallRatio ? callOf(wallRatio, { confidence, same }) : null;
+      const call = state === "measured" && wallRatio ? callOf(wallRatio, { confidence, same, sameFirst: same > resolution.relative + 1e-12 }) : null;
       return { label, ref: ref.label, mode: modeOf(info), state, wallRatio, cpuRatio, call, sameWithin: same };
     });
 
@@ -364,6 +370,7 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
             ),
           }
         : null,
+    ...(input.notes ? { notes: input.notes } : {}),
     clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable),
   };
 }

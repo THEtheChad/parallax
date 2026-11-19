@@ -20,6 +20,29 @@ pnpm check        # type-check and tests
 
 Node runs the TypeScript sources directly (type stripping); there is no build step.
 
+## Command line
+
+`parallax --help` lists the commands; `parallax <command> --help` (or `parallax help <command>`)
+prints one command's options with their defaults and an example. `parallax --version` prints the
+package version, the harness commit and the Node version.
+
+The report goes to stdout and the log to stderr, so `parallax bench ... > report.txt` keeps the
+report clean. The long-running commands (`lsp-diff`, `bench`, `lsp-bench`, `calibrate`, `suite run`)
+stamp each log line with the time since the start (`[41:02]`), log a line when each round starts and
+one per side as it finishes, and after each look say how much is left as a range: a sequential bench
+stops at the first look where every call is settled, so it may end at the next look or run to
+`--max-runs`. `--quiet` (`-q`) drops the progress and keeps warnings and errors.
+
+| exit status | meaning |
+| --- | --- |
+| 0 | clean: no differences, every session clean, every bench measured cleanly |
+| 1 | a finding: differences, an unclean session, a bench not measured cleanly (each command's `--help` says what it means there) |
+| 2 | a usage error (the message and the command's synopsis), an input error (one line: a profile, project, bundle or file that is not there or not right), or a harness error (one line, with a hint that `PARALLAX_DEBUG=1` adds the stack) |
+| 3 | measured cleanly, but the `--fail-on` policy failed (`bench`, `lsp-bench`, `bench-summary`, `compare-results`; see below) |
+
+Option values are checked before anything else: `bench --runs abc` says what `--runs` wants even
+when `--project` is missing too, and before any file is read.
+
 ## Answer diff
 
 ```sh
@@ -94,9 +117,15 @@ adds a variable), optionally pinned to cores (`--pin 2-5`, Linux).
 benches one binary against itself to measure this machine's noise floor; later benches on the same
 setup warn when `--resolution` is below it.
 
-The output has a table of sides (wall time, CPU, peak memory, exit code, whether the output matches
-the reference), a table of candidates (ratio, interval, call: `faster`, `slower`, `same ±r`,
-`unresolved` or `too few rounds`), each implementation's parallel speedup, and the counters.
+The output starts with any warnings about the run (no noise calibration, on battery, a lowered
+priority...; kept in the bundle's notes), then a table of sides (wall time, CPU, peak memory in MiB,
+exit code, whether the output matches the reference), a table of candidates (ratio, interval, call:
+`faster`, `slower`, `same ±r`, `same (within 1 ms)` where the millisecond floor decided it,
+`unresolved` or `too few rounds`), each implementation's parallel speedup, and the counters. The
+last line is the verdict: `MEASURED`, with what it does not cover (calls that could still change
+with more rounds; candidates whose output differs from the reference, so their times are of other
+work), or `NOT MEASURED CLEANLY`. `lsp-bench` calls a CPU or memory metric `lower` or `higher`, a
+time `faster` or `slower`.
 
 **[docs/measurement.md](docs/measurement.md) is the method**: what disturbs a measurement and how
 each disturbance is handled, the statistics behind a call, what the counters are for, and what works
@@ -104,6 +133,66 @@ on which OS.
 
 `parallax bench-summary <bundle-dir>` recomputes the summary from `samples.jsonl`, which keeps every
 sample and round, rejected ones included; other gates can be tried after the fact.
+
+### Report formats
+
+Every command that prints a report takes `--format`: `bench`, `lsp-bench`, `calibrate`,
+`bench-summary`, `compare-results`, and for answer diffs `lsp-diff`, `compare`, `summary` and
+`import-lspdiff`. (`compare-results`' CSV has its own columns, one row per comparison: see
+[Comparing runs, and a CI policy](#comparing-runs-and-a-ci-policy).)
+
+| format | stdout |
+| --- | --- |
+| `text` (default) | the report for a terminal |
+| `md` | the same content as GitHub-flavoured Markdown (headings, tables, warnings as a blockquote), for a PR comment or `$GITHUB_STEP_SUMMARY` |
+| `json` | the summary object itself (`calibrate`: the calibration), as in `summary.json` |
+| `csv` | one row per figure (below) |
+
+The log (progress, the bundle's path) always goes to stderr, so `--format json > summary.json` or
+`--format md >> "$GITHUB_STEP_SUMMARY"` captures only the report.
+
+**CSV.** A bench or lsp-bench CSV is long-format: every row has the columns `kind, label, vs, metric,
+unit, n, value, low, high, ref_value, ratio, ratio_low, ratio_high, confidence, call, same_within,
+state, spread`, empty where one does not apply. Numbers are raw (ms, bytes, counts; fractions, not
+percents), calls are the stored ones (`faster`/`slower` for every metric). Kinds:
+
+- `side`: a side's median of a metric (`value`, interval `low`..`high`, its `confidence`, `n`
+  rounds); bench metrics `wall`, `cpu`, `peak_rss`, lsp-bench metrics by key (`open.firstDiagnosticsMs`).
+- `comparison`: a candidate (`label`) against its reference (`vs`) on a metric: both medians
+  (`value`, `ref_value`), the ratio interval, `call`, `same_within` (the half-width of "same") and the
+  candidate's `state`. A metric never compared by ratio has the call `not compared`.
+- `speedup` (bench): an implementation's single-threaded / default wall ratio.
+- `counter` (bench): a counted run's median (`value`) over `n` runs and its `spread` ((max - min) / median).
+
+`summary` (lsp-diff) writes `candidate, method, verdict, count`, with a `total` method per verdict;
+`calibrate` writes `metric, mode, floor, suggested_resolution, call, coverage, ref_median_ms, rounds`.
+
+### summary.json
+
+`summary.json` (and `--format json`) is the machine-readable result, and a contract: fields are only
+ever added, never renamed or removed, so a reader written today keeps working (new fields are
+optional for readers of older bundles). Each summary names its kind in `schema`:
+`parallax.bench-summary/1` or `parallax.lsp-bench-summary/1`. Top-level fields of both:
+
+| field | what |
+| --- | --- |
+| `canaryBaselineMs` | the fastest canary of the bench, the baseline rounds are judged against |
+| `rounds` | `planned`, `max`, `attempts`, `accepted`, `rejected`, `failed` |
+| `minRounds` | accepted rounds a comparison needs (`--min-runs`), else `noisy` |
+| `confidence` | the confidence a call needed at the last look |
+| `resolution` | what "same" means: `relative` (fraction) and `floorMs` |
+| `gates`, `rejections` | the round gates, and how many rounds each reason rejected |
+| `sides` | per side: its medians with intervals (`estimate`, `low`, `high`, `confidence`, `n`) and counts |
+| `candidates` | per candidate: `ref`, `mode`, `state` (`measured`, `noisy`, `failed`), ratio intervals and calls (`sameWithin`: the half-width of "same") |
+| `settled` | every call is one more rounds would not change |
+| `notes` | the run's warnings, as the report shows them |
+| `clean` | every candidate measured (bench: and every output stable): the exit status |
+
+A bench adds `accounting`, `speedups` and `counters`; an lsp-bench adds `usage`, `memory` and
+`harnessLagP95Ms`, and its `sides[].metrics` and `candidates[].metrics` are keyed by metric
+(`open.firstDiagnosticsMs`, ...; units in `src/timing/lspSummary.ts`, `METRICS`). An lsp-diff
+bundle's `summary.json` (no `schema` field) has `requests`, `refRuns`, `sessions`, `candidates`
+(`totals` and `byMethod` per verdict, `attention`) and `clean`, under the same rule.
 
 ## Timing language servers
 
@@ -147,6 +236,50 @@ cannot be verified, so publishing from one needs `--allow-dirty`.
 
 `parallax verify-result <file>...` checks that a result is unedited and that its summary is what its
 records give.
+
+## Comparing runs, and a CI policy
+
+```sh
+pnpm parallax compare-results <old> <new>          # result files or bench / lsp-bench bundle directories
+pnpm parallax compare-results main.json pr.json --fail-on worse --fail-threshold 1.05
+```
+
+Compares two saved runs of the same project: for each candidate (and lsp-bench metric) present in
+both, its per-round ratio to the in-run reference, new against old, as a ratio of ratios with a
+two-sample interval (`new/old 1.07x (1.02x..1.12x)`) and a call: `better`, `worse`, `same ±r`,
+`unresolved` or `too few rounds`. Each row is called at 95% (`--confidence`), as bench calls each
+comparison; `--family-wise` makes the 95% hold for the whole report instead (Bonferroni: wider
+intervals, so runs want 9 to 12 rounds). `--metrics <key,...>` narrows an lsp-bench comparison, which
+a gate on one should do (over 100 rows at 95% each, a few come out worse by chance); `--resolution` and
+`--resolution-ms` are as for bench. Runs of different projects are refused unless
+`--allow-project-change`; another machine, harness commit, workload setting or binary is named in a
+warning (a changed candidate binary is usually the point). `--format json` prints the comparison as one
+object; `--format csv` one row per comparison (`candidate, mode, ref_old, ref_new, metric, unit, state,
+rounds_old, rounds_new, ratio_old, ratio_new, shift, shift_low, shift_high, coverage, call, same_within,
+ref_changed`, then each run's reference and candidate medians and, from one machine, the candidate's own
+new/old), with the `--fail-on` decision on stderr. The text and Markdown tables show the called figures;
+a CLI bench's reference and candidate times follow in a table of their own, an lsp-bench's are in json
+and csv.
+
+`bench`, `lsp-bench` and `bench-summary` take `--fail-on <conditions>`, a policy evaluated after
+measuring and kept apart from whether the measurement was clean: `slower` (any `slower` call; for
+lsp-bench any compared metric, or those in `--fail-metrics <key,...>`), `output` (bench: an output
+DIFFERENT from the reference's or UNSTABLE), `unresolved` (an unsettled call or a noisy candidate).
+`--fail-threshold 1.10` fails `slower` only when the whole interval is above 1.10, judged on the
+look that settled the call (a bench stops as soon as every call is settled, so a `slower` call whose
+interval still reaches below 1.10 passes: the threshold fails only what is surely over it). `compare-results`
+takes `--fail-on worse,unresolved`. The decision, naming each failing candidate and metric, is printed
+after the report (on stderr for the bench commands, so stdout stays the report).
+
+| exit | bench, lsp-bench, bench-summary | compare-results |
+| --- | --- | --- |
+| 0 | measured cleanly; the policy (if any) passed | compared; the policy (if any) passed |
+| 1 | not measured cleanly (decides before the policy) | - |
+| 2 | usage or harness error | usage error, or runs that cannot be compared |
+| 3 | measured cleanly; the `--fail-on` policy failed | the `--fail-on` policy failed |
+
+The statistics and their limits are in [docs/measurement.md](docs/measurement.md) ("A CI policy" and
+"Comparing two runs").
 
 ## Profiles
 

@@ -1,0 +1,63 @@
+{
+ "schema": "parallax.calibration/2",
+ "kind": "lsp-bench",
+ "createdAt": "2026-11-01T00:00:00.000Z",
+ "host": {
+  "platform": "linux",
+  "arch": "x64",
+  "kernel": "6.18",
+  "cpuModel": "Test CPU",
+  "cpus": 8,
+  "pin": null,
+  "affinity": null
+ },
+ "side": {
+  "profile": "tsc7",
+  "binSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "version": "7.0.2"
+ },
+ "project": {
+  "name": "fake",
+  "commit": null
+ },
+ "rounds": {
+  "planned": 9,
+  "accepted": 9,
+  "rejected": 0
+ },
+ "floors": [
+  {
+   "metric": "open.firstDiagnosticsMs",
+   "mode": "default",
+   "ratios": [
+    1,
+    1.01,
+    0.99
+   ],
+   "refMedianMs": 300,
+   "floor": 0.031,
+   "suggested": 0.035,
+   "call": "same",
+   "coverage": 0.98
+  },
+  {
+   "metric": "session.memoryBytes",
+   "mode": "default",
+   "ratios": [
+    1,
+    1.2,
+    1.1
+   ],
+   "refMedianMs": null,
+   "floor": 0.12,
+   "suggested": 0.12,
+   "call": "slower",
+   "coverage": 0.98
+  }
+ ],
+ "falseCalls": [
+  "session.memoryBytes@default"
+ ],
+ "falseCallsExpected": 1,
+ "excessFalseCalls": false
+}

@@ -12,6 +12,7 @@
 // The names passed are recorded in every bundle; their values are not (PATH and HOME are paths).
 
 import { platform } from "node:os";
+import { InputError } from "../errors.ts";
 
 export type EnvMode = "sealed" | "inherit";
 
@@ -89,6 +90,6 @@ export function baseEnv(policy: EnvPolicy, from: NodeJS.ProcessEnv = process.env
 }
 
 export function parseEnvMode(value: string): EnvMode {
-  if (value !== "sealed" && value !== "inherit") throw new Error(`--env: want sealed or inherit (got ${JSON.stringify(value)})`);
+  if (value !== "sealed" && value !== "inherit") throw new InputError(`--env: want sealed or inherit (got ${JSON.stringify(value)})`);
   return value;
 }

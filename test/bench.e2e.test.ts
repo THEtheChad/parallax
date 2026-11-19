@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { bench, readBenchBundle, summarizeBenchBundle } from "../src/commands/bench.ts";
 import { calibrate } from "../src/commands/calibrate.ts";
 import { loadCalibration } from "../src/timing/calibration.ts";
+import { FORMATS, formatBench } from "../src/report/render.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // No stored calibration from this machine leaks into the bundles under test.
@@ -71,6 +72,14 @@ test("bench: alternating rounds, paired ratios, outputs compared, every sample k
 
   // The summary is a pure function of samples.jsonl; other gates can be applied afterwards.
   assert.deepEqual(summarizeBenchBundle(dir, readBenchBundle(dir)), summary);
+
+  // The bundle's warnings reach the summary and the top of the report; every format renders.
+  assert.deepEqual(summary.notes, bundle.notes);
+  assert.ok(summary.notes!.some((n) => /no noise calibration/.test(n)));
+  const text = formatBench(summary, "text");
+  assert.match(text, /^warnings:\n {2}- /);
+  assert.match(text, /output differs from the reference for fake-check-other/);
+  for (const f of FORMATS) assert.match(formatBench(summary, f), /fake-check-fast/);
   const strict = summarizeBenchBundle(dir, readBenchBundle(dir), { maxOutsideCores: Infinity, maxCanaryDrift: -1 });
   assert.equal(strict.rounds.accepted, 0);
   assert.equal(strict.candidates[0]!.state, "noisy");

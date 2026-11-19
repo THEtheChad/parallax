@@ -39,6 +39,8 @@ import { parsePinning, pinCommand, type Pinning } from "../host/pinning.ts";
 import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
 import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
+import { warn, type LogFn } from "../log.ts";
+import { InputError, readJsonFile } from "../errors.ts";
 
 export interface BenchSettings {
   config: string;
@@ -97,7 +99,7 @@ export interface BenchOptions extends Partial<Omit<BenchSettings, "idle" | "gate
   cands: string[];
   idle?: Partial<IdleGate>;
   gates?: Partial<Gates>;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 const fmtMs = (ms: number): string => (ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(ms < 10 ? 1 : 0)} ms`);
@@ -109,13 +111,13 @@ const offIfUnlimited = (g: Gates): Gates => ({
 });
 
 export function checkCommand(side: Side, config: string, project: string): string[] {
-  if (!side.profile.check) throw new Error(`profile ${side.profile.name} has no check command`);
+  if (!side.profile.check) throw new InputError(`profile ${side.profile.name} has no check command`);
   return [...side.profile.check.command.map((t) => expand(t, { ...side.vars, config, project })), ...side.checkArgs];
 }
 
 export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: BenchBundle; summary: BenchSummary }> {
   const root = resolve(opts.project);
-  if (!existsSync(root)) throw new Error(`no project at ${root}`);
+  if (!existsSync(root)) throw new InputError(`no project at ${root}`);
   const settings: BenchSettings = {
     config: opts.config ?? "tsconfig.json",
     threads: opts.threads ?? [...THREAD_MODES],
@@ -135,14 +137,14 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   };
   const host = hostInfo();
   if (opts.pin !== undefined) settings.pin = parsePinning(opts.pin, host.state.affinity?.list ?? null);
-  if (!existsSync(resolve(root, settings.config))) throw new Error(`no ${settings.config} in ${root}`);
-  if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
-  if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
+  if (!existsSync(resolve(root, settings.config))) throw new InputError(`no ${settings.config} in ${root}`);
+  if (settings.minRounds > settings.runs) throw new InputError(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
+  if (settings.maxRuns < settings.runs) throw new InputError(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
   const bound: Side[] = [await bindSide(opts.ref, "ref", { env: settings.env! })];
   for (const c of opts.cands) bound.push(await bindSide(c, "cand", { env: settings.env! }));
   const sides = sidesInModes(bound, settings.threads, "check");
   const labels = sides.map((s) => s.label);
-  if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
+  if (new Set(labels).size !== labels.length) throw new InputError(`side labels must be unique (got ${labels.join(", ")})`);
   const commands = new Map(sides.map((s) => [s.label, pinCommand(checkCommand(s, settings.config, root), settings.pin ?? null)]));
 
   const dir = prepareBundleDir(opts.out);
@@ -182,12 +184,12 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   for (const note of [priorityNote(bundle.host.load), ...machineStateNotes(bundle.host.state), ...calibration.notes]) {
     if (!note) continue;
     bundle.notes.push(note);
-    opts.log(`warning: ${note}`);
+    warn(opts.log, note);
   }
   if (process.platform === "linux" && /microsoft/i.test(bundle.host.kernel) && /^\/mnt\/[a-z]\//.test(root)) {
     const note = "the project is on the Windows disk, read from WSL through a slow file share: times include the share";
     bundle.notes.push(note);
-    opts.log(`warning: ${note}`);
+    warn(opts.log, note);
   }
   const save = (): void => writeJsonAtomic(join(dir, "bundle.json"), bundle);
   save();
@@ -221,12 +223,13 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     return rec;
   };
 
+  if (settings.warmup) opts.log(`warm-up: ${settings.warmup} run${settings.warmup === 1 ? "" : "s"} per side, not measured`);
   for (let w = 1; w <= settings.warmup; w++) for (const s of sides) await sample(s, 0, w, true);
   await runRounds({
     sides,
     runs: settings.runs,
     maxRuns: settings.maxRuns,
-    stop: () => settledAtLook(summarizeBenchRecords(bundle, writer.records as Records), settings, opts.log),
+    stop: (progress) => settledAtLook(summarizeBenchRecords(bundle, writer.records as Records), settings, opts.log, progress),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -234,7 +237,9 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
     log: opts.log,
     run: async (side, round, attempt) => {
       const s = await sample(side, round, attempt, false);
-      return { cpuMs: s.cpuMs, failed: s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0, brief: fmtMs(s.wallMs) };
+      const failed = s.timedOut || s.exit.signal !== null || s.crashSignals.length > 0;
+      const why = s.timedOut ? ", timed out" : s.exit.signal ? `, killed by ${s.exit.signal}` : s.crashSignals.length ? `, crashed (${s.crashSignals.join(", ")})` : "";
+      return { cpuMs: s.cpuMs, failed, brief: `${fmtMs(s.wallMs)} wall${s.cpuMs === null ? "" : `, ${fmtMs(s.cpuMs)} CPU`}${why}` };
     },
   });
   if (plan?.backend === "perf") {
@@ -263,8 +268,8 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
 }
 
 export function readBenchBundle(dir: string): BenchBundle {
-  const b = JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as BenchBundle;
-  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "cli-bench") throw new Error(`${dir}: not a ${BUNDLE_SCHEMA} cli-bench bundle`);
+  const b = readJsonFile(join(dir, "bundle.json")) as BenchBundle;
+  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "cli-bench") throw new InputError(`${dir}: not a ${BUNDLE_SCHEMA} cli-bench bundle`);
   return b;
 }
 
@@ -284,6 +289,8 @@ export function summarizeBenchRecords(bundle: BenchBundle, records: Records, gat
     gates,
     accounting: bundle.host.accounting,
     ...(bundle.host.counters ? { counters: bundle.host.counters } : {}),
+    // Copied, so the summary does not change when the bundle's notes grow later.
+    notes: [...(bundle.notes ?? [])],
   });
 }
 

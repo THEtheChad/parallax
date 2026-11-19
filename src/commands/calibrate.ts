@@ -13,6 +13,8 @@ import { METRICS, sessionFailed, type LspBenchSummary, type SessionRecord } from
 import { acceptRounds, refFor, sampleFailed, type BenchSummary, type RoundRecord, type SampleRecord } from "../timing/summary.ts";
 import { bench, type BenchBundle, type BenchOptions } from "./bench.ts";
 import { lspBench, type LspBenchBundle, type LspBenchOptions } from "./lspBench.ts";
+import { warn } from "../log.ts";
+import { InputError } from "../errors.ts";
 
 export const DEFAULT_CALIBRATION_RUNS = 9;
 
@@ -28,7 +30,7 @@ export interface CalibrateOptions extends Shared {
 // The A/A twin of a side spec: the same profile and binary under the label "<label>.aa".
 export function twinSpec(spec: string): string {
   const eq = spec.indexOf("=");
-  if (eq < 1) throw new Error(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
+  if (eq < 1) throw new InputError(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
   const left = spec.slice(0, eq);
   const labelled = /^[A-Za-z]:[\\/]/.test(left) ? null : /^([\w.-]+):(.+)$/.exec(left);
   if (labelled) return `${labelled[1]}.aa:${labelled[2]}${spec.slice(eq)}`;
@@ -68,7 +70,7 @@ export async function calibrate(opts: CalibrateOptions): Promise<{ dir: string; 
   writeJsonAtomic(join(r.dir, "calibration.json"), calibration);
   // A calibration whose bench was not measured cleanly (too few rounds, a crash) says nothing reliable.
   const file = save && r.summary.clean ? saveCalibration(calibration) : null;
-  if (save && !r.summary.clean) opts.log("warning: the A/A bench was not measured cleanly; the calibration is in the bundle but not kept for later benches");
+  if (save && !r.summary.clean) warn(opts.log, "the A/A bench was not measured cleanly; the calibration is in the bundle but not kept for later benches");
   return { dir: r.dir, calibration, file };
 }
 

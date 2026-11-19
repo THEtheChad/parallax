@@ -6,6 +6,7 @@ import { fetchProject, loadSuite, selectProjects } from "../suite/suite.ts";
 import { bench, type BenchOptions } from "./bench.ts";
 import { lspBench, type LspBenchOptions } from "./lspBench.ts";
 import { publish } from "./publish.ts";
+import type { LogFn } from "../log.ts";
 
 type Shared = Omit<BenchOptions & LspBenchOptions, "project" | "out" | "config" | "file" | "files" | "log">;
 
@@ -18,7 +19,7 @@ export interface SuiteRunOptions extends Shared {
   only?: "bench" | "lsp-bench";
   // Publish each bundle into this results collection.
   publishTo?: string;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 export interface SuiteRunOutcome {

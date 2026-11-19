@@ -36,17 +36,20 @@ export interface MetricInfo {
   unit: "ms" | "bytes" | "bytes/edit" | "x";
   // false: a figure of each server alone, never compared by ratio (it can be zero or negative).
   compare?: false;
+  // What it measures, for how a report words its call: a time (faster/slower, the default), or the
+  // server's CPU time or memory (lower/higher).
+  measure?: "cpu" | "memory";
 }
 
 // Report order. Every metric is lower-is-better.
 export const METRICS: MetricInfo[] = [
   { key: "open.firstDiagnosticsMs", label: "open: first diagnostics", unit: "ms" },
   { key: "open.initializeMs", label: "open: initialize", unit: "ms" },
-  { key: "open.cpuMs", label: "open: server CPU", unit: "ms" },
-  { key: "edit.firstRequestMs", label: "edit: first request after", unit: "ms" },
-  { key: "edit.secondRequestMs", label: "edit: second request", unit: "ms" },
-  { key: "edit.diagnosticsMs", label: "edit: diagnostics", unit: "ms" },
-  { key: "edit.cpuPerEditMs", label: "edit: CPU per edit", unit: "ms" },
+  { key: "open.cpuMs", label: "open: server CPU", unit: "ms", measure: "cpu" },
+  { key: "edit.firstRequestMs", label: "edit: first request after an edit", unit: "ms" },
+  { key: "edit.secondRequestMs", label: "edit: second request after an edit", unit: "ms" },
+  { key: "edit.diagnosticsMs", label: "edit: diagnostics after an edit", unit: "ms" },
+  { key: "edit.cpuPerEditMs", label: "edit: CPU per edit", unit: "ms", measure: "cpu" },
   { key: "typing.completionP50Ms", label: "typing: completion p50", unit: "ms" },
   { key: "typing.completionP95Ms", label: "typing: completion p95", unit: "ms" },
   { key: "typing.diagnosticP50Ms", label: "typing: diagnostics p50", unit: "ms" },
@@ -54,21 +57,21 @@ export const METRICS: MetricInfo[] = [
   { key: "typing.hoverP50Ms", label: "typing: hover p50", unit: "ms" },
   { key: "typing.semanticTokensP50Ms", label: "typing: semantic tokens p50", unit: "ms" },
   { key: "typing.inlayHintP50Ms", label: "typing: inlay hints p50", unit: "ms" },
-  { key: "typing.cpuPerKeyMs", label: "typing: CPU per key", unit: "ms" },
+  { key: "typing.cpuPerKeyMs", label: "typing: CPU per key", unit: "ms", measure: "cpu" },
   { key: "service.keyP50Ms", label: "service: per key p50", unit: "ms" },
   { key: "service.completionP50Ms", label: "service: completion p50", unit: "ms" },
   { key: "service.diagnosticP50Ms", label: "service: diagnostics p50", unit: "ms" },
-  { key: "service.cpuPerKeyMs", label: "service: CPU per key", unit: "ms" },
+  { key: "service.cpuPerKeyMs", label: "service: CPU per key", unit: "ms", measure: "cpu" },
   { key: "paused.keyP50Ms", label: "paused: per key p50", unit: "ms" },
-  { key: "paused.cpuPerKeyMs", label: "paused: CPU per key", unit: "ms" },
+  { key: "paused.cpuPerKeyMs", label: "paused: CPU per key", unit: "ms", measure: "cpu" },
   { key: "errfix.errorDiagnosticsMs", label: "errfix: error shown", unit: "ms" },
   { key: "errfix.fixDiagnosticsMs", label: "errfix: error cleared", unit: "ms" },
   { key: "imports.completionMs", label: "imports: completion", unit: "ms" },
   { key: "imports.quickFixMs", label: "imports: add-import fix", unit: "ms" },
   { key: "long.diagnosticP50Ms", label: "long: diagnostics p50", unit: "ms" },
-  { key: "long.latencyDrift", label: "long: last/first quarter", unit: "x", compare: false },
-  { key: "long.memoryGrowthPerEditBytes", label: "long: memory growth per edit", unit: "bytes/edit", compare: false },
-  { key: "session.memoryBytes", label: "session: memory", unit: "bytes" },
+  { key: "long.latencyDrift", label: "long: diagnostics last/first quarter", unit: "x", compare: false },
+  { key: "long.memoryGrowthPerEditBytes", label: "long: memory growth per edit", unit: "bytes/edit", compare: false, measure: "memory" },
+  { key: "session.memoryBytes", label: "session: memory", unit: "bytes", measure: "memory" },
 ];
 
 export type CandidateState = "measured" | "noisy" | "failed";
@@ -121,6 +124,8 @@ export interface LspBenchSummary {
   candidates: LspCandidateSummary[];
   // Every metric of every comparison has a call more rounds would not change (or the candidate failed).
   settled: boolean;
+  // The bundle's notes, shown as warnings (absent in older summaries; see BenchSummary.notes).
+  notes?: string[];
   clean: boolean;
 }
 
@@ -135,6 +140,8 @@ export interface LspSummarizeInput {
   gates: Gates;
   usage: string;
   memory: "peak" | "current" | null;
+  // The bundle's notes (absent: none recorded in the summary).
+  notes?: string[];
 }
 
 export const sessionFailed = (s: SessionRecord): boolean => s.outcome !== "clean";
@@ -199,7 +206,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
         const ok = pairs.length > 0 && pairs.every(([r, c]) => r !== null && r > 0 && c !== null);
         const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!), confidence) : null;
         const same = sameWithin(resolution.relative, unit === "ms" ? resolution.floorMs : 0, ok ? median(pairs.map(([r]) => r!)) : null);
-        metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio, { confidence, same }) : null, sameWithin: same };
+        metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio, { confidence, same, sameFirst: same > resolution.relative + 1e-12 }) : null, sameWithin: same };
       }
       return { label, ref: ref.label, mode: modeOf(info), state, metrics };
     });
@@ -222,6 +229,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
     settled: candidates.every(
       (c) => c.state === "failed" || Object.values(c.metrics).every((m) => !m || m.ratio === null || (m.call !== null && SETTLED.includes(m.call))),
     ),
+    ...(input.notes ? { notes: input.notes } : {}),
     clean: candidates.every((c) => c.state === "measured"),
   };
 }

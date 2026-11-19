@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { machineState, type MachineState } from "../host/machineState.ts";
 import type { Role, Side, ThreadMode } from "../profile/profile.ts";
+import { InputError, readJsonFile } from "../errors.ts";
 
 export const BUNDLE_SCHEMA = "parallax.bundle/1";
 
@@ -207,8 +208,8 @@ export function writeJsonAtomic(path: string, value: unknown): void {
 }
 
 export function readBundle(dir: string): Bundle {
-  const b = JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as Bundle;
-  if (b.schema !== BUNDLE_SCHEMA) throw new Error(`${dir}: not a ${BUNDLE_SCHEMA} bundle (schema ${JSON.stringify(b.schema)})`);
-  if (b.kind !== "lsp-answer-diff") throw new Error(`${dir}: unsupported bundle kind ${JSON.stringify(b.kind)}`);
+  const b = readJsonFile(join(dir, "bundle.json")) as Bundle;
+  if (b.schema !== BUNDLE_SCHEMA) throw new InputError(`${dir}: not a ${BUNDLE_SCHEMA} bundle (schema ${JSON.stringify(b.schema)})`);
+  if (b.kind !== "lsp-answer-diff") throw new InputError(`${dir}: unsupported bundle kind ${JSON.stringify(b.kind)}`);
   return b;
 }

@@ -16,8 +16,10 @@ import { isDeepStrictEqual } from "node:util";
 import { configDir } from "../host/config.ts";
 import { harnessInfo, type CorpusInfo, type HostInfo, type SideRecord } from "../bundle/bundle.ts";
 import { loadSuite, suiteProjectFor } from "../suite/suite.ts";
+import { warn, type LogFn } from "../log.ts";
 import { readBenchBundle, summarizeBenchRecords, type BenchBundle, type Records as BenchRecords } from "./bench.ts";
 import { readLspBenchBundle, summarizeLspBenchRecords, type LspBenchBundle, type Records as LspRecords } from "./lspBench.ts";
+import { InputError, notJson, readJsonFile } from "../errors.ts";
 
 export const RESULT_SCHEMA = "parallax.result/1";
 
@@ -83,6 +85,14 @@ function summarizeResult(r: Pick<PublishedResult, "kind" | "records">): unknown 
 }
 
 const normalize = (v: unknown): unknown => JSON.parse(JSON.stringify(v));
+
+// Summaries gained `notes` (copied from the result's own notes, which the id covers) after results
+// were first published: a result whose summary predates them is checked without them.
+const withoutNewNotes = (recomputed: unknown, stored: unknown): unknown => {
+  if (!recomputed || typeof recomputed !== "object" || (stored && typeof stored === "object" && "notes" in stored)) return recomputed;
+  const { notes: _, ...rest } = recomputed as Record<string, unknown>;
+  return rest;
+};
 const resultId = (r: Omit<PublishedResult, "id">): string => createHash("sha256").update(JSON.stringify(r)).digest("hex").slice(0, 16);
 
 export interface PublishOptions {
@@ -91,17 +101,17 @@ export interface PublishOptions {
   out: string;
   // Publish a bundle made by a harness with uncommitted changes (its summary cannot be checked).
   allowDirty?: boolean;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 export function publish(opts: PublishOptions): { file: string; result: PublishedResult } {
-  const raw = JSON.parse(readFileSync(join(opts.bundleDir, "bundle.json"), "utf8")) as { kind?: string };
+  const raw = readJsonFile(join(opts.bundleDir, "bundle.json")) as { kind?: string };
   const bundle: BenchBundle | LspBenchBundle = raw.kind === "lsp-bench" ? readLspBenchBundle(opts.bundleDir) : readBenchBundle(opts.bundleDir);
-  if (bundle.status !== "complete") throw new Error(`${opts.bundleDir}: the bench did not complete (status ${bundle.status})`);
+  if (bundle.status !== "complete") throw new InputError(`${opts.bundleDir}: the bench did not complete (status ${bundle.status})`);
   if (!bundle.harness.gitCommit || bundle.harness.gitDirty) {
     const why = bundle.harness.gitCommit ? "had uncommitted changes" : "was not a git checkout";
-    if (!opts.allowDirty) throw new Error(`the harness that made this bundle ${why}, so no one can recompute its summary; pass --allow-dirty to publish it anyway`);
-    opts.log(`warning: the harness ${why}; the result cannot be verified`);
+    if (!opts.allowDirty) throw new InputError(`the harness that made this bundle ${why}, so no one can recompute its summary; pass --allow-dirty to publish it anyway`);
+    warn(opts.log, `the harness ${why}; the result cannot be verified`);
   }
   const records = readRecords(opts.bundleDir);
   const { hostname: _hostname, ...host } = bundle.host;
@@ -160,13 +170,22 @@ export interface Verification {
 
 export function verifyResult(file: string): Verification {
   const problems: string[] = [];
-  const r = JSON.parse(readFileSync(file, "utf8")) as PublishedResult;
+  // The wrong file (a CSV report, a bundle's samples) is a result that does not check out, like one
+  // of another schema, so the files after it are still verified.
+  const text = readFileSync(file, "utf8");
+  let r: PublishedResult;
+  try {
+    r = JSON.parse(text) as PublishedResult;
+  } catch (e) {
+    return { ok: false, problems: [notJson(e)], harnessDiffers: false };
+  }
+  if (!r || typeof r !== "object") return { ok: false, problems: ["not a result (not a JSON object)"], harnessDiffers: false };
   if (r.schema !== RESULT_SCHEMA) return { ok: false, problems: [`schema is ${JSON.stringify(r.schema)}, not ${RESULT_SCHEMA}`], harnessDiffers: false };
   if (r.kind !== "cli-bench" && r.kind !== "lsp-bench") problems.push(`unknown kind ${JSON.stringify(r.kind)}`);
   const { id, ...rest } = r;
   if (resultId(rest) !== id) problems.push("the id is not the hash of the result: it was edited after publishing");
   if (!Array.isArray(r.records) || !r.records.length) problems.push("no records");
-  if (!problems.length && !isDeepStrictEqual(normalize(summarizeResult(r as unknown as PublishedResult)), normalize(r.summary)))
+  if (!problems.length && !isDeepStrictEqual(withoutNewNotes(normalize(summarizeResult(r as unknown as PublishedResult)), r.summary), normalize(r.summary)))
     problems.push("the summary is not what the records give");
   if ("hostname" in (r.host ?? {})) problems.push("the host's name is in the result");
   const harnessDiffers = r.harness?.gitCommit !== harnessInfo().gitCommit;

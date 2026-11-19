@@ -78,6 +78,11 @@ export interface CallRule {
   // Half-width of "same", as a ratio (0.05: within 5%).
   same: number;
   minEffect?: number;
+  // The ms floor, not the relative resolution, set `same`: a difference under the floor is below what
+  // the bench can tell apart, so an interval inside it is "same" even when it misses 1 (0.25 ms against
+  // 0.31 ms is not "faster"). Where the relative resolution governs, a clear difference inside it is
+  // still called: 2% faster, surely, is worth saying.
+  sameFirst?: boolean;
 }
 
 export const DEFAULT_RESOLUTION = 0.05;
@@ -86,9 +91,11 @@ export const DEFAULT_RESOLUTION_MS = 1;
 export function callOf(ratio: Interval, rule: CallRule): Call {
   const minEffect = rule.minEffect ?? MIN_EFFECT;
   if (ratio.confidence < rule.confidence - 1e-12) return "too few rounds";
+  const same = ratio.low >= 1 - rule.same && ratio.high <= 1 + rule.same;
+  if (rule.sameFirst && same) return "same";
   if (ratio.high < 1 && ratio.estimate <= 1 - minEffect) return "faster";
   if (ratio.low > 1 && ratio.estimate >= 1 + minEffect) return "slower";
-  if (ratio.low >= 1 - rule.same && ratio.high <= 1 + rule.same) return "same";
+  if (same) return "same";
   return "unresolved";
 }
 

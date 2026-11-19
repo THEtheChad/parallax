@@ -34,9 +34,11 @@ import { runRounds, settledAtLook } from "../timing/rounds.ts";
 import { DEFAULT_RESOLUTION, DEFAULT_RESOLUTION_MS } from "../timing/stats.ts";
 import { DEFAULT_GATES, type Gates, type RoundRecord } from "../timing/summary.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
+import { warn as warnLog, type LogFn } from "../log.ts";
 import { parsePinning, type Pinning } from "../host/pinning.ts";
 import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
 import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
+import { InputError, readJsonFile } from "../errors.ts";
 
 export interface LspBenchSettings {
   // Thread modes each server runs in (absent in bundles from before modes: default only).
@@ -98,7 +100,7 @@ export interface LspBenchOptions extends Partial<Omit<LspBenchSettings, "idle" |
   file?: string[];
   idle?: Partial<IdleGate>;
   gates?: Partial<Gates>;
-  log: (msg: string) => void;
+  log: LogFn;
 }
 
 const fmtMs = (ms: number | null): string => (ms === null ? "-" : ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(ms < 10 ? 1 : 0)} ms`);
@@ -110,7 +112,7 @@ const offIfUnlimited = (g: Gates): Gates => ({
 
 export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bundle: LspBenchBundle; summary: LspBenchSummary }> {
   const root = resolve(opts.project);
-  if (!existsSync(root)) throw new Error(`no project at ${root}`);
+  if (!existsSync(root)) throw new InputError(`no project at ${root}`);
   const settings: LspBenchSettings = {
     threads: opts.threads ?? [...THREAD_MODES],
     files: opts.files ?? 6,
@@ -138,17 +140,17 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   };
   const host = hostInfo();
   if (opts.pin !== undefined) settings.pin = parsePinning(opts.pin, host.state.affinity?.list ?? null);
-  if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
-  if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
-  if (!(settings.intervalMs > 0)) throw new Error("--interval-ms must be more than 0");
+  if (settings.minRounds > settings.runs) throw new InputError(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
+  if (settings.maxRuns < settings.runs) throw new InputError(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
+  if (!(settings.intervalMs > 0)) throw new InputError("--interval-ms must be more than 0");
   const bound: Side[] = [await bindSide(opts.ref, "ref", { env: settings.env! })];
   for (const c of opts.cands) bound.push(await bindSide(c, "cand", { env: settings.env! }));
   const sides = sidesInModes(bound, settings.threads, "lsp");
   const labels = sides.map((s) => s.label);
-  if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
+  if (new Set(labels).size !== labels.length) throw new InputError(`side labels must be unique (got ${labels.join(", ")})`);
 
   const files = pickFiles(root, settings.files, opts.file);
-  if (!files.length) throw new Error(`no TypeScript files found in ${root}`);
+  if (!files.length) throw new InputError(`no TypeScript files found in ${root}`);
   const spec: LspTimingSpec = {
     root,
     files,
@@ -183,7 +185,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   };
   const warn = (note: string): void => {
     bundle.notes.push(note);
-    opts.log(`warning: ${note}`);
+    warnLog(opts.log, note);
   };
   if (settings.imports! > 0) {
     const names = importCandidates(readText(files[0]!), files.slice(1).map(readText), settings.imports!);
@@ -249,7 +251,7 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
     sides,
     runs: settings.runs,
     maxRuns: settings.maxRuns,
-    stop: () => settledAtLook(summarizeLspBenchRecords(bundle, writer.records as Records), settings, opts.log),
+    stop: (progress) => settledAtLook(summarizeLspBenchRecords(bundle, writer.records as Records), settings, opts.log, progress),
     attempts: settings.attempts,
     idle: settings.idle,
     gates: settings.gates,
@@ -268,9 +270,12 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   bundle.corpus.changedDuringRun = bundle.corpus.statusSha256Before === null ? null : bundle.corpus.statusSha256Before !== bundle.corpus.statusSha256After;
   if (bundle.corpus.changedDuringRun) bundle.notes.push("the corpus's git status changed during the run");
   bundle.host.loadAfter = hostLoad().loadavg;
-  const summary = summarizeLspBenchBundle(dir, bundle);
-  if (summary.harnessLagP95Ms !== null && summary.harnessLagP95Ms > settings.intervalMs / 4)
+  let summary = summarizeLspBenchBundle(dir, bundle);
+  if (summary.harnessLagP95Ms !== null && summary.harnessLagP95Ms > settings.intervalMs / 4) {
     warn(`the harness sent keys up to ${summary.harnessLagP95Ms.toFixed(0)} ms late (p95): the client machine was too busy for a ${settings.intervalMs} ms typing interval`);
+    // Again, so the summary carries the warning its own figures raised.
+    summary = summarizeLspBenchBundle(dir, bundle);
+  }
   bundle.status = "complete";
   bundle.finishedAt = new Date().toISOString();
   save();
@@ -278,8 +283,8 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
 }
 
 export function readLspBenchBundle(dir: string): LspBenchBundle {
-  const b = JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as LspBenchBundle;
-  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "lsp-bench") throw new Error(`${dir}: not a ${BUNDLE_SCHEMA} lsp-bench bundle`);
+  const b = readJsonFile(join(dir, "bundle.json")) as LspBenchBundle;
+  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "lsp-bench") throw new InputError(`${dir}: not a ${BUNDLE_SCHEMA} lsp-bench bundle`);
   return b;
 }
 
@@ -299,6 +304,8 @@ export function summarizeLspBenchRecords(bundle: LspBenchBundle, records: Record
     gates,
     usage: bundle.host.usage,
     memory: bundle.host.memory,
+    // Copied, so the summary does not change when the bundle's notes grow later.
+    notes: [...(bundle.notes ?? [])],
   });
 }
 
