@@ -15,6 +15,9 @@
 import type { BenchSummary } from "./summary.ts";
 import { METRICS, type LspBenchSummary } from "./lspSummary.ts";
 import { SETTLED, type Interval } from "./stats.ts";
+import { ratio } from "../report/common.ts";
+
+const METRIC_MEASURE = new Map(METRICS.filter((m) => m.measure).map((m) => [m.key as string, m.measure]));
 
 // bench and lsp-bench: `slower`, `output` (bench only), `unresolved`. compare-results: `worse`,
 // `unresolved`.
@@ -100,7 +103,10 @@ export function parseMetricKeys(text: string, option: string): string[] {
 // Calls more rounds would not change (stats.ts SETTLED, and compare-results' names for them).
 const DECIDED: ReadonlySet<string> = new Set<string>([...SETTLED, "better", "worse"]);
 
-const ratioText = (i: Interval): string => `${i.estimate.toFixed(2)}x (${i.low.toFixed(2)}x..${i.high.toFixed(2)}x)`;
+const ratioText = (i: Interval): string => `${ratio(i.estimate)} (${ratio(i.low)}..${ratio(i.high)})`;
+// As the report words it: CPU and memory are higher, not slower.
+const callWord = (call: string, metric: string | null): string =>
+  call === "slower" && metric !== null && METRIC_MEASURE.get(metric) ? "higher" : call;
 
 // One comparison's call under the policy. `slow` is the condition and `slowCall` the call that means
 // slower: `slower` in a bench, `worse` in compare-results.
@@ -113,9 +119,10 @@ function judge(
   const out: PolicyFailure[] = [];
   const at = { candidate: c.candidate, metric: c.metric };
   if (policy.conditions.includes(slow) && c.call === slowCall && c.ratio) {
-    if (policy.threshold === null) out.push({ condition: slow, ...at, reason: `${c.metricLabel} ${slowCall}: ${ratioText(c.ratio)}` });
+    const word = callWord(slowCall, c.metric);
+    if (policy.threshold === null) out.push({ condition: slow, ...at, reason: `${c.metricLabel} ${word}: ${ratioText(c.ratio)}` });
     else if (c.ratio.low > policy.threshold)
-      out.push({ condition: slow, ...at, reason: `${c.metricLabel} ${slowCall}: ${ratioText(c.ratio)}, all of it above ${policy.threshold.toFixed(2)}x` });
+      out.push({ condition: slow, ...at, reason: `${c.metricLabel} ${word}: ${ratioText(c.ratio)}, all of it above ${ratio(policy.threshold)}` });
   }
   if (policy.conditions.includes("unresolved")) {
     if (c.state !== "measured" && c.state !== "failed") out.push({ condition: "unresolved", ...at, reason: `${c.metricLabel}: ${c.state}` });
@@ -174,7 +181,9 @@ export function evaluateComparePolicy(rows: readonly ComparedRow[], policy: Poli
   for (const r of rows) {
     if (policy.metrics && r.metric !== "wall" && !policy.metrics.includes(r.metric)) continue;
     // A candidate that was not measured cleanly in either run could not be compared: that is unresolved.
-    const state = r.state === "compared" ? "measured" : r.state.startsWith("failed") || r.state.startsWith("noisy") ? `not compared (${r.state})` : "skip";
+    // A metric one run did not measure (a phase skipped) is no comparison; anything else not compared
+    // (noisy, failed, a ratio of 0) is unresolved.
+    const state = r.state === "compared" ? "measured" : r.state.startsWith("not measured") ? "skip" : `not compared (${r.state})`;
     if (state === "skip") continue;
     failures.push(...judge(policy, "worse", { candidate: r.label, metric: r.metric, metricLabel: r.metricLabel, call: r.call, ratio: r.shift, state }, "worse"));
   }

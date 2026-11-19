@@ -12,12 +12,26 @@ const figure = (v: number, unit: string): string => (unit === "ms" ? ms(v) : uni
 
 // "same" widened by the ms floor reads as the floor ("same (within 1 ms)"), not the percent it works
 // out to over a fast request.
+// A call against a changed reference says so: the ratio of ratios then mixes the two changes.
 const callText = (r: CompareRow, c: Comparison): string => {
   if (!r.call) return r.state === "compared" ? "-" : `not compared: ${r.state}`;
-  if (r.call !== "same" || r.sameWithin === null) return r.call;
-  if (r.unit === "ms" && c.resolution.floorMs > 0 && r.sameWithin > c.resolution.relative + 1e-9) return `same (within ${c.resolution.floorMs} ms)`;
-  return `same ±${Math.round(r.sameWithin * 100)}%`;
+  const changed = r.refChanged && r.call !== "unresolved" && r.call !== "too few rounds" ? " (ref changed)" : "";
+  if (r.call !== "same" || r.sameWithin === null) return `${r.call}${changed}`;
+  if (r.unit === "ms" && c.resolution.floorMs > 0 && r.sameWithin > c.resolution.relative + 1e-9) return `same (within ${c.resolution.floorMs} ms)${changed}`;
+  return `same ±${Math.round(r.sameWithin * 100)}%${changed}`;
 };
+
+// The interval column, headed by the coverage the intervals really have (the exact Mann-Whitney
+// distribution covers in steps, at or above the confidence asked for), as bench's columns are; per
+// cell when the rows differ (different round counts).
+function shiftColumn(c: Comparison): { header: string; cell: (r: CompareRow) => string } {
+  const cover = new Set(c.rows.flatMap((r) => (r.shift ? [percent(r.shift.confidence)] : [])));
+  const shared = cover.size === 1 ? [...cover][0]! : null;
+  return {
+    header: shared ? `new/old (${shared} interval)` : "new/old (interval, coverage)",
+    cell: (r) => (r.shift ? `${ratio(r.shift.estimate)} (${ratio(r.shift.low)}..${ratio(r.shift.high)}${shared ? "" : `, ${percent(r.shift.confidence)}`})` : "-"),
+  };
+}
 
 function describe(c: Comparison, which: "old" | "new"): string {
   const r = c[which];
@@ -34,8 +48,11 @@ export function comparisonReport(c: Comparison): Report {
     line(describe(c, "old"), 1),
     line(describe(c, "new"), 1),
     line(
-      `new / old of each candidate's per-round ratio to its reference: Hodges-Lehmann estimate and two-sample interval; calls at ${percent(c.confidence)} for the whole report${
-        c.comparisons > 1 ? ` (Bonferroni over ${c.comparisons} comparisons: ${percent(c.perComparison)} each)` : ""
+      `new / old of each candidate's per-round ratio to its reference: Hodges-Lehmann estimate and two-sample interval; ${
+        // Summaries from before --family-wise were always family-wise.
+        c.familyWise !== false
+          ? `calls at ${percent(c.confidence)} for the whole report${c.comparisons > 1 ? ` (Bonferroni over ${c.comparisons} comparisons: ${percent(c.perComparison)} each)` : ""}`
+          : `calls at ${percent(c.confidence)} each${c.comparisons > 1 ? ` (${c.comparisons} comparisons; --family-wise makes it ${percent(c.confidence)} for the whole report)` : ""}`
       }; "same" is within ±${Math.round(c.resolution.relative * 100)}% (or ${c.resolution.floorMs} ms)`,
     ),
   ];
@@ -45,12 +62,13 @@ export function comparisonReport(c: Comparison): Report {
   if (c.warnings.length) blocks.push({ kind: "warnings", notes: c.warnings });
 
   const abs = c.sameMachine === true;
-  const columns = ["n old/new", "old ratio", "new ratio", `new/old (${percent(c.perComparison)} interval)`, "call", "ref old -> new", ...(abs ? ["own new/old (same machine)"] : [])];
+  const shift = shiftColumn(c);
+  const columns = ["n old/new", "old ratio", "new ratio", shift.header, "call", "ref old -> new", ...(abs ? ["own new/old (same machine)"] : [])];
   const cells = (r: CompareRow): string[] => [
     r.old && r.new ? `${r.old.rounds}/${r.new.rounds}` : "-",
     r.old ? ratio(r.old.ratio) : "-",
     r.new ? ratio(r.new.ratio) : "-",
-    r.shift ? `${ratio(r.shift.estimate)} (${ratio(r.shift.low)}..${ratio(r.shift.high)})` : "-",
+    shift.cell(r),
     callText(r, c),
     r.old && r.new ? `${figure(r.old.refMedian, r.unit)} -> ${figure(r.new.refMedian, r.unit)}` : "-",
     ...(abs ? [r.absolute ? `${ratio(r.absolute.estimate)} (${ratio(r.absolute.low)}..${ratio(r.absolute.high)})` : "-"] : []),
@@ -79,7 +97,7 @@ export const comparisonMarkdown = (c: Comparison): string => toMarkdown(comparis
 
 // One row per compared figure; raw numbers and the stored call.
 export function comparisonCsv(c: Comparison): string {
-  const header = ["candidate", "mode", "ref_old", "ref_new", "metric", "unit", "state", "rounds_old", "rounds_new", "ratio_old", "ratio_new", "shift", "shift_low", "shift_high", "confidence", "call", "same_within"];
+  const header = ["candidate", "mode", "ref_old", "ref_new", "metric", "unit", "state", "rounds_old", "rounds_new", "ratio_old", "ratio_new", "shift", "shift_low", "shift_high", "coverage", "call", "same_within", "ref_changed"];
   return toCsv(
     header,
     c.rows.map((r) => [
@@ -97,9 +115,10 @@ export function comparisonCsv(c: Comparison): string {
       r.shift?.estimate ?? null,
       r.shift?.low ?? null,
       r.shift?.high ?? null,
-      c.perComparison,
+      r.shift?.confidence ?? null,
       r.call,
       r.sameWithin,
+      r.refChanged ? "true" : "false",
     ]),
   );
 }

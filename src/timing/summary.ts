@@ -337,7 +337,7 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       const state: CandidateState = anyFailed ? "failed" : pairs.length < input.minRounds ? "noisy" : "measured";
       const refWall = pairs.length ? median(pairs.map((p) => p.ref.wallMs)) : null;
       const same = sameWithin(resolution.relative, resolution.floorMs, refWall);
-      const call = state === "measured" && wallRatio ? callOf(wallRatio, { confidence, same }) : null;
+      const call = state === "measured" && wallRatio ? callOf(wallRatio, { confidence, same, sameFirst: same > resolution.relative + 1e-12 }) : null;
       return { label, ref: ref.label, mode: modeOf(info), state, wallRatio, cpuRatio, call, sameWithin: same };
     });
 

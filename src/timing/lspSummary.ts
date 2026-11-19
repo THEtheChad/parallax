@@ -206,7 +206,7 @@ export function summarizeLspBench(input: LspSummarizeInput): LspBenchSummary {
         const ok = pairs.length > 0 && pairs.every(([r, c]) => r !== null && r > 0 && c !== null);
         const ratio = ok ? medianInterval(pairs.map(([r, c]) => c! / r!), confidence) : null;
         const same = sameWithin(resolution.relative, unit === "ms" ? resolution.floorMs : 0, ok ? median(pairs.map(([r]) => r!)) : null);
-        metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio, { confidence, same }) : null, sameWithin: same };
+        metrics[key] = { ratio, call: state === "measured" && ratio ? callOf(ratio, { confidence, same, sameFirst: same > resolution.relative + 1e-12 }) : null, sameWithin: same };
       }
       return { label, ref: ref.label, mode: modeOf(info), state, metrics };
     });

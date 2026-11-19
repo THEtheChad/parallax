@@ -105,7 +105,7 @@ gave a "95%" interval excluding 1.)
 | call | when |
 | --- | --- |
 | `faster`, `slower` | the whole interval is on one side of 1, and the median differs from 1 by at least 1% |
-| `same ±r` | the whole interval lies within 1 ± r, the resolution: `--resolution` (5%), widened to `--resolution-ms` (1 ms) over the reference's figure where that is larger, so a 0.3 ms request is "same" within 1 ms, not within 5% of 0.3 ms (the report then says `same (within 1 ms)`, not the ±300% it works out to) |
+| `same ±r` | the whole interval lies within 1 ± r, the resolution: `--resolution` (5%), widened to `--resolution-ms` (1 ms) over the reference's figure where that is larger, so a 0.3 ms request is "same" within 1 ms, not within 5% of 0.3 ms (the report then says `same (within 1 ms)`, not the ±300% it works out to). Where the floor governs, an interval inside it is `same` even when it misses 1: 0.25 ms against 0.31 ms is a difference below what the bench can tell apart, not `faster`. Where the relative resolution governs, a clear difference inside it is still called (2% faster, surely, is worth saying) |
 | `unresolved` | none of these; more rounds would tell |
 | `too few rounds` | the interval cannot reach the confidence a call needs |
 
@@ -197,14 +197,19 @@ of F ms in the candidate moves the ratio of ratios by about F over its old time)
 3 cover at most 90%).
 
 **Multiplicity.** A report makes one comparison per candidate, mode and metric: 6 for a CLI bench of
-three candidates in both modes, over 100 for an lsp-bench. At 95% each, an lsp-bench comparison of two
-identical runs would show several false calls, and a CI gate on it would fail most of the time. So the
-confidence is for the whole report (`--confidence`, 95%), split equally over its comparisons
-(Bonferroni): with 6, each interval is at 99.17%. Any one false call anywhere in the report then has at
-most a 5% chance. Bonferroni is the simplest correction that holds whatever the dependence between
-comparisons (metrics of one session are correlated), at the price of wider intervals: an lsp-bench
-comparison needs more rounds per run to settle, and `--metrics <key,...>` narrows the report, and with
-it the correction, to what a gate is for.
+three candidates in both modes, over 100 for an lsp-bench. By default each is called at `--confidence`
+(95%), as bench calls each of its comparisons: a row's call is wrong at most one time in twenty, and
+between two identical runs about 5% of the rows can come out `better` or `worse` by chance. That is
+fine for reading a report, and for a gate on a few rows; a gate on an lsp-bench comparison's hundred
+rows would trip on chance alone (compare-results warns when `--fail-on` judges more than 10). Two
+remedies: `--metrics <key,...>` narrows the report to what the gate is for, and `--family-wise` splits
+the confidence over every row (Bonferroni: with 6 rows each interval is at 99.17%), so that any one
+false call anywhere has at most a 5% chance, whatever the dependence between rows (metrics of one
+session are correlated). The price is width: at 99.17% the narrowest 6-against-6 interval is nearly the
+whole range of differences, so `same ±5%` needs every pair of rounds across the runs within 5%, and
+6-round runs mostly come out `unresolved`; family-wise comparisons want 9 to 12 rounds per run. Each
+interval's header shows the coverage it really has (the exact distribution covers in steps, at or
+above the confidence asked for).
 
 **Refused and warned.** Runs of different kinds, or of different projects (repository or commit; the
 project name when a commit is unknown), are refused unless `--allow-project-change`: a change in the
@@ -224,7 +229,9 @@ none.
 
 `--fail-on worse,unresolved` (and `--fail-threshold R` for `worse`) is the same policy for a
 comparison: exit 3 when a row is worse (surely above R), or when one is unresolved, too few rounds, or
-a candidate could not be compared because it was noisy or failed in either run. `--format json` prints
+a candidate could not be compared because it was noisy or failed in either run. A call against a
+reference that changed between the runs (another label, or another binary) is marked `(ref changed)`:
+its ratio of ratios mixes the candidate's change with the reference's. `--format json` prints
 the whole comparison, the policy's decision included, as one object.
 
 ## The environment

@@ -188,6 +188,9 @@ export interface CompareRow {
   call: CompareCall | null;
   // Half-width of "same" for this row (the resolution, or the ms floor over the old candidate's figure).
   sameWithin: number | null;
+  // The reference is another label or binary in the new run: the ratio of ratios mixes a change in the
+  // candidate with one in the reference.
+  refChanged: boolean;
   // The candidate's own figure new / old, only when both runs are from the same machine; never called.
   absolute: ShiftInterval | null;
 }
@@ -209,8 +212,10 @@ export interface Comparison {
   new: RunInfo;
   // true: the same machine id (results) or hostname and CPU (bundles); null: cannot tell.
   sameMachine: boolean | null;
-  // For the whole report (Bonferroni over the comparisons: each interval is at `perComparison`).
+  // Each row's (default), or with familyWise the whole report's (Bonferroni over the comparisons: each
+  // interval is then at `perComparison`).
   confidence: number;
+  familyWise: boolean;
   comparisons: number;
   perComparison: number;
   resolution: Resolution;
@@ -225,8 +230,9 @@ export interface Comparison {
 
 export interface CompareOptions {
   resolution?: Resolution;
-  // For the whole report (default 0.95).
+  // For each row (default 0.95), or with familyWise for the whole report.
   confidence?: number;
+  familyWise?: boolean;
   // lsp-bench metric keys to compare (default: every compared metric).
   metrics?: string[] | null;
   allowProjectChange?: boolean;
@@ -338,7 +344,7 @@ export function compareRuns(a: Run, b: Run, opts: CompareOptions = {}): Comparis
   for (const [x, y] of pairs) if (x.ref !== y.ref) warnings.push(`${x.label} is compared with ${x.ref} in the old run and ${y.ref} in the new one`);
 
   // Rows first, without intervals: how many comparisons there are sets each one's confidence.
-  type Pending = Omit<CompareRow, "shift" | "call" | "sameWithin" | "absolute"> & { values?: { old: { ref: number[]; cand: number[] }; new: { ref: number[]; cand: number[] } } };
+  type Pending = Omit<CompareRow, "shift" | "call" | "sameWithin" | "absolute" | "refChanged"> & { values?: { old: { ref: number[]; cand: number[] }; new: { ref: number[]; cand: number[] } } };
   const pending: Pending[] = [];
   for (const [x, y] of pairs) {
     const base = { label: x.label, mode: x.mode, ref: { old: x.ref, new: y.ref } };
@@ -359,20 +365,26 @@ export function compareRuns(a: Run, b: Run, opts: CompareOptions = {}): Comparis
     }
   }
   const comparisons = pending.filter((r) => r.state === "compared").length;
-  const perComparison = comparisons > 1 ? 1 - (1 - confidence) / comparisons : confidence;
+  const familyWise = opts.familyWise === true;
+  const perComparison = familyWise && comparisons > 1 ? 1 - (1 - confidence) / comparisons : confidence;
+  const shaOf = (r: Run, label: string): string | null => r.bundle.sides.find((s) => s.label === label)?.binSha256 ?? null;
+  const refChanged = (ref: CompareRow["ref"]): boolean => ref.old !== ref.new || shaOf(a, ref.old) !== shaOf(b, ref.new);
+  // Many rows at 95% each: a gate on them would trip on chance alone.
+  if (opts.policy && !familyWise && comparisons > 10)
+    warnings.push(`--fail-on judges ${comparisons} comparisons at ${Math.round(confidence * 100)}% each: about ${Math.round(comparisons * (1 - confidence))} false calls are expected between identical runs; narrow them with --metrics, or use --family-wise`);
 
   const rows: CompareRow[] = pending.map(({ values, ...r }) => {
-    if (!values) return { ...r, shift: null, call: null, sameWithin: null, absolute: null };
+    if (!values) return { ...r, shift: null, call: null, sameWithin: null, absolute: null, refChanged: refChanged(r.ref) };
     const ratios = (v: { ref: number[]; cand: number[] }): number[] => v.cand.map((c, i) => c / v.ref[i]!);
     const shift = ratioShift(ratios(values.old), ratios(values.new), perComparison);
     // The floor in ms is over the old candidate's figure: a change of F ms in the candidate moves the
     // ratio of ratios by about F / (its old time), as a change in a bench moves its ratio by F / (the
     // reference's time).
     const same = sameWithin(resolution.relative, r.unit === "ms" ? resolution.floorMs : 0, r.old!.candMedian);
-    const raw = shift ? callOf(shift, { confidence: perComparison, same }) : null;
+    const raw = shift ? callOf(shift, { confidence: perComparison, same, sameFirst: same > resolution.relative + 1e-12 }) : null;
     const call: CompareCall | null = raw === "faster" ? "better" : raw === "slower" ? "worse" : raw;
     const absolute = sameMachine === true ? ratioShift(values.old.cand, values.new.cand, perComparison) : null;
-    return { ...r, state: shift ? "compared" : "a ratio is 0", shift, call, sameWithin: same, absolute };
+    return { ...r, state: shift ? "compared" : "a ratio is 0", shift, call, sameWithin: same, absolute, refChanged: refChanged(r.ref) };
   });
 
   const counts: Partial<Record<CompareCall, number>> = {};
@@ -386,6 +398,7 @@ export function compareRuns(a: Run, b: Run, opts: CompareOptions = {}): Comparis
     new: runInfo(b),
     sameMachine,
     confidence,
+    familyWise,
     comparisons,
     perComparison,
     resolution,

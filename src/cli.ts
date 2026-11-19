@@ -402,16 +402,17 @@ const COMMANDS: Command[] = [
     summary: "compare two saved runs of the same project: did the candidates get faster or slower?",
     usage: "compare-results <old> <new> [options]",
     about:
-      "Compares two saved runs (published result files, or bench / lsp-bench bundle directories) of the same project: for each candidate (and lsp-bench metric), its per-round ratios to the reference in the new run against those in the old. The runs are independent, so this is a two-sample comparison (Hodges-Lehmann shift of the log ratios, with a Mann-Whitney interval), Bonferroni-corrected over every row so the confidence holds for the whole report. Ratios to the in-run reference cancel most of a difference in machine speed; absolute times are shown only when both runs come from the same machine. docs/measurement.md, \"Comparing two runs\", is the method.",
+      "Compares two saved runs (published result files, or bench / lsp-bench bundle directories) of the same project: for each candidate (and lsp-bench metric), its per-round ratios to the reference in the new run against those in the old. The runs are independent, so this is a two-sample comparison (Hodges-Lehmann shift of the log ratios, with a Mann-Whitney interval), each row at --confidence, as bench calls each comparison (--family-wise: Bonferroni over every row, so it holds for the whole report). Ratios to the in-run reference cancel most of a difference in machine speed; absolute times are shown only when both runs come from the same machine. docs/measurement.md, \"Comparing two runs\", is the method.",
     positionals: true,
     options: [
       {
         title: "comparison",
         opts: [
           { name: "resolution", value: "<fraction>", default: "0.05", help: "new/old within this fraction is the same" },
-          { name: "resolution-ms", value: "<ms>", default: "1", help: "lsp-bench: or within this many milliseconds of the old candidate's time" },
-          { name: "confidence", value: "<p>", default: "0.95", help: "for the whole report (Bonferroni over its rows)" },
-          { name: "metrics", value: "<key,...>", help: "lsp-bench: compare only these metrics (narrows the report, the policy and the correction)" },
+          { name: "resolution-ms", value: "<ms>", default: "1", help: "or within this many milliseconds of the old candidate's time, where that is wider" },
+          { name: "confidence", value: "<p>", default: "0.95", help: "for each row; with --family-wise, for the whole report" },
+          { name: "family-wise", help: "split the confidence over every row (Bonferroni): any false call anywhere at most 1 - confidence; wider intervals, so runs need more rounds" },
+          { name: "metrics", value: "<key,...>", help: "lsp-bench: compare only these metrics (narrows the report, the policy and any --family-wise correction)" },
           { name: "allow-project-change", help: "compare runs of different project commits" },
         ],
       },
@@ -442,6 +443,7 @@ const COMMANDS: Command[] = [
         c = compareResults(positionals[0]!, positionals[1]!, {
           ...(resolution !== undefined || resolutionMs !== undefined ? { resolution: { relative: resolution ?? 0.05, floorMs: resolutionMs ?? 1 } } : {}),
           ...defined({ confidence }),
+          familyWise: o["family-wise"] === true,
           metrics,
           allowProjectChange: o["allow-project-change"] === true,
           policy,

@@ -85,6 +85,7 @@ interface Fake {
   machine?: string;
   commit?: string;
   candSha?: string;
+  refSha?: string;
   candLabel?: string;
   harness?: string;
 }
@@ -135,7 +136,7 @@ function resultFile(f: Fake): string {
     corpus: {},
     settings: { config: "tsconfig.json", threads: ["default"], runs: f.rounds.length, maxRuns: f.rounds.length, minRounds: 3, resolution: 0.05, resolutionMs: 1, gates: DEFAULT_GATES },
     canary: { version: "1", size: 1 },
-    sides: [side("ref", "ref", "r".repeat(64)), side(candLabel, "cand", f.candSha ?? "c".repeat(64))],
+    sides: [side("ref", "ref", f.refSha ?? "r".repeat(64)), side(candLabel, "cand", f.candSha ?? "c".repeat(64))],
     notes: [],
     createdAt: "2026-11-18T00:00:00.000Z",
     finishedAt: "2026-11-18T00:01:00.000Z",
@@ -231,7 +232,8 @@ test("compare-results: a real-shaped result (bench, then publish) against itself
   assert.equal(c.kind, "cli-bench");
   assert.deepEqual(c.rows.map((r) => r.label), ["fake-check-fast", "fake-check-other"]);
   assert.equal(c.comparisons, 2);
-  assert.ok(Math.abs(c.perComparison - 0.975) < 1e-12, "Bonferroni over two comparisons");
+  assert.equal(c.perComparison, 0.95, "each row at the confidence, as bench calls each comparison");
+  assert.ok(Math.abs(compareResults(file, file, { familyWise: true }).perComparison - 0.975) < 1e-12, "--family-wise: Bonferroni over two comparisons");
   for (const r of c.rows) assert.equal(r.shift!.estimate, 1);
   // The bundle and its result hold the same rounds.
   const mixed = compareResults(dir, file);
@@ -373,4 +375,42 @@ test("compare-results on lsp-bench runs: one row per metric, --metrics narrows t
   assert.equal(narrow.perComparison, 0.95, "one comparison: no correction");
   assert.equal(narrow.policy!.passed, true, "the slower metric is not in the report");
   assert.match(renderComparison(c), /cand vs ref\nmetric/);
+});
+
+test("compare-results: identical runs with real-shaped noise are the same at the defaults; --family-wise needs more rounds", () => {
+  // Ratios spread by about 2% around 0.5, in a fixed order: the same rounds, shuffled, in both runs.
+  const noise = [0.0, 0.012, -0.009, 0.02, -0.017, 0.006];
+  const rounds = (order: number[]) => order.map((i) => ({ ref: 100, cand: 50 * (1 + noise[i]!) }));
+  const old = resultFile({ rounds: rounds([0, 1, 2, 3, 4, 5]) });
+  const fresh = resultFile({ rounds: rounds([5, 3, 1, 0, 2, 4]) });
+  const policy = parsePolicy({ failOn: "worse,unresolved" }, "compare-cli-bench");
+  const c = compareResults(old, fresh, { policy });
+  assert.equal(c.rows[0]!.call, "same");
+  assert.equal(c.policy!.passed, true, "identical runs pass a gate");
+  assert.match(renderComparison(c), /calls at 95% each/);
+  // The interval's header is its real coverage, at or above the 95% asked for.
+  const cover = c.rows[0]!.shift!.confidence;
+  assert.ok(cover >= 0.95);
+  assert.match(renderComparison(c), new RegExp(`new/old \\(${Math.floor(cover * 1000) / 10}% interval\\)`));
+});
+
+test("compare-results: a call against a changed reference binary says so", () => {
+  const old = resultFile({ rounds: steady(9) });
+  const c = compareResults(old, resultFile({ rounds: steady(9, 1.2) }));
+  assert.equal(c.rows[0]!.refChanged, false);
+  assert.doesNotMatch(renderComparison(c), /ref changed/);
+  const moved = compareResults(old, resultFile({ rounds: steady(9, 1.2), refSha: "s".repeat(64) }));
+  assert.equal(moved.rows[0]!.refChanged, true);
+  assert.match(renderComparison(moved), /worse \(ref changed\)/);
+  assert.ok(moved.warnings.some((w) => /reference ref binary changed/.test(w)));
+});
+
+test("calls: under the ms floor an interval inside 'same' is same, even when it misses 1", async () => {
+  const { callOf } = await import("../src/timing/stats.ts");
+  const iv = { estimate: 0.8, low: 0.73, high: 0.93, confidence: 0.96, n: 6 };
+  // 0.3 ms against 0.37 ms with a 1 ms floor: same is ±333%.
+  assert.equal(callOf(iv, { confidence: 0.95, same: 3.33 }), "faster", "without sameFirst the old order stands");
+  assert.equal(callOf(iv, { confidence: 0.95, same: 3.33, sameFirst: true }), "same");
+  // The relative resolution: a clear 7% gain inside ±5%? No: outside it, still faster.
+  assert.equal(callOf({ ...iv, estimate: 0.93, low: 0.92, high: 0.94 }, { confidence: 0.95, same: 0.05, sameFirst: false }), "faster");
 });
