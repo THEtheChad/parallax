@@ -40,6 +40,7 @@ import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
 import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
 import { warn, type LogFn } from "../log.ts";
+import { InputError, readJsonFile } from "../errors.ts";
 
 export interface BenchSettings {
   config: string;
@@ -110,13 +111,13 @@ const offIfUnlimited = (g: Gates): Gates => ({
 });
 
 export function checkCommand(side: Side, config: string, project: string): string[] {
-  if (!side.profile.check) throw new Error(`profile ${side.profile.name} has no check command`);
+  if (!side.profile.check) throw new InputError(`profile ${side.profile.name} has no check command`);
   return [...side.profile.check.command.map((t) => expand(t, { ...side.vars, config, project })), ...side.checkArgs];
 }
 
 export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: BenchBundle; summary: BenchSummary }> {
   const root = resolve(opts.project);
-  if (!existsSync(root)) throw new Error(`no project at ${root}`);
+  if (!existsSync(root)) throw new InputError(`no project at ${root}`);
   const settings: BenchSettings = {
     config: opts.config ?? "tsconfig.json",
     threads: opts.threads ?? [...THREAD_MODES],
@@ -136,14 +137,14 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
   };
   const host = hostInfo();
   if (opts.pin !== undefined) settings.pin = parsePinning(opts.pin, host.state.affinity?.list ?? null);
-  if (!existsSync(resolve(root, settings.config))) throw new Error(`no ${settings.config} in ${root}`);
-  if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
-  if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
+  if (!existsSync(resolve(root, settings.config))) throw new InputError(`no ${settings.config} in ${root}`);
+  if (settings.minRounds > settings.runs) throw new InputError(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
+  if (settings.maxRuns < settings.runs) throw new InputError(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
   const bound: Side[] = [await bindSide(opts.ref, "ref", { env: settings.env! })];
   for (const c of opts.cands) bound.push(await bindSide(c, "cand", { env: settings.env! }));
   const sides = sidesInModes(bound, settings.threads, "check");
   const labels = sides.map((s) => s.label);
-  if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
+  if (new Set(labels).size !== labels.length) throw new InputError(`side labels must be unique (got ${labels.join(", ")})`);
   const commands = new Map(sides.map((s) => [s.label, pinCommand(checkCommand(s, settings.config, root), settings.pin ?? null)]));
 
   const dir = prepareBundleDir(opts.out);
@@ -267,8 +268,8 @@ export async function bench(opts: BenchOptions): Promise<{ dir: string; bundle: 
 }
 
 export function readBenchBundle(dir: string): BenchBundle {
-  const b = JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as BenchBundle;
-  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "cli-bench") throw new Error(`${dir}: not a ${BUNDLE_SCHEMA} cli-bench bundle`);
+  const b = readJsonFile(join(dir, "bundle.json")) as BenchBundle;
+  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "cli-bench") throw new InputError(`${dir}: not a ${BUNDLE_SCHEMA} cli-bench bundle`);
   return b;
 }
 

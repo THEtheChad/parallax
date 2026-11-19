@@ -37,7 +37,10 @@ stops at the first look where every call is settled, so it may end at the next l
 | --- | --- |
 | 0 | clean: no differences, every session clean, every bench measured cleanly |
 | 1 | a finding: differences, an unclean session, a bench not measured cleanly (each command's `--help` says what it means there) |
-| 2 | a usage error (the message and the command's synopsis) or a harness error (one line; `PARALLAX_DEBUG=1` adds the stack) |
+| 2 | a usage error (the message and the command's synopsis), an input error (one line: a profile, project, bundle or file that is not there or not right), or a harness error (one line, with a hint that `PARALLAX_DEBUG=1` adds the stack) |
+
+Option values are checked before anything else: `bench --runs abc` says what `--runs` wants even
+when `--project` is missing too, and before any file is read.
 
 ## Answer diff
 

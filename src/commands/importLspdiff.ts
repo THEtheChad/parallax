@@ -16,6 +16,7 @@ import { initializeSha256 } from "../session/initialize.ts";
 import { pickFiles, rel } from "../session/picker.ts";
 import { TYPED } from "../session/script.ts";
 import { prepareBundleDir } from "./lspDiff.ts";
+import { InputError } from "../errors.ts";
 
 export interface ImportOptions {
   from: string;
@@ -44,9 +45,9 @@ async function convert(src: string, dest: string, id: string, side: Side): Promi
 export async function importLspdiff(opts: ImportOptions): Promise<{ dir: string; bundle: Bundle; summary: Summary }> {
   const from = resolve(opts.from);
   const root = resolve(opts.project);
-  if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`no project directory at ${root}`);
+  if (!existsSync(root) || !statSync(root).isDirectory()) throw new InputError(`no project directory at ${root}`);
   for (const name of ["go.jsonl", "go2.jsonl", "rs.jsonl"])
-    if (!existsSync(join(from, name))) throw new Error(`${from} has no ${name}: not a scripts/lspdiff diff output`);
+    if (!existsSync(join(from, name))) throw new InputError(`${from} has no ${name}: not a scripts/lspdiff diff output`);
   const ref = await bindSide(opts.ref, "ref");
   const cand = await bindSide(opts.cand, "cand");
   const dir = prepareBundleDir(opts.out);

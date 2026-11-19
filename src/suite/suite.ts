@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { InputError } from "../errors.ts";
 
 export const SUITE_SCHEMA = "parallax.suite/1";
 export const SUITE_FILE = join(dirname(fileURLToPath(import.meta.url)), "../../suite.json");
@@ -66,7 +67,7 @@ export function loadSuite(path = SUITE_FILE): Suite {
 
 // The projects named, in suite order; all of them when none are named.
 export function selectProjects(suite: Suite, names: string[]): SuiteProject[] {
-  for (const n of names) if (!suite.projects.some((p) => p.name === n)) throw new Error(`no project ${JSON.stringify(n)} in the suite (${suite.projects.map((p) => p.name).join(", ")})`);
+  for (const n of names) if (!suite.projects.some((p) => p.name === n)) throw new InputError(`no project ${JSON.stringify(n)} in the suite (${suite.projects.map((p) => p.name).join(", ")})`);
   return names.length ? suite.projects.filter((p) => names.includes(p.name)) : suite.projects;
 }
 

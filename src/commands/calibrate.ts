@@ -14,6 +14,7 @@ import { acceptRounds, refFor, sampleFailed, type BenchSummary, type RoundRecord
 import { bench, type BenchBundle, type BenchOptions } from "./bench.ts";
 import { lspBench, type LspBenchBundle, type LspBenchOptions } from "./lspBench.ts";
 import { warn } from "../log.ts";
+import { InputError } from "../errors.ts";
 
 export const DEFAULT_CALIBRATION_RUNS = 9;
 
@@ -29,7 +30,7 @@ export interface CalibrateOptions extends Shared {
 // The A/A twin of a side spec: the same profile and binary under the label "<label>.aa".
 export function twinSpec(spec: string): string {
   const eq = spec.indexOf("=");
-  if (eq < 1) throw new Error(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
+  if (eq < 1) throw new InputError(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
   const left = spec.slice(0, eq);
   const labelled = /^[A-Za-z]:[\\/]/.test(left) ? null : /^([\w.-]+):(.+)$/.exec(left);
   if (labelled) return `${labelled[1]}.aa:${labelled[2]}${spec.slice(eq)}`;

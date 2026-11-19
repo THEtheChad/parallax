@@ -9,7 +9,7 @@
 // stdout is the report, stderr the log. Exit status: 0 clean, 1 a finding (differences, a bench not
 // measured cleanly), 2 a usage or harness error.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { harnessInfo, readBundle, writeJsonAtomic } from "./bundle/bundle.ts";
@@ -27,6 +27,7 @@ import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
 import { formatBench, formatCalibration, formatLspBench, formatSummary, FORMATS, parseFormat, type Format } from "./report/render.ts";
 import { createLog, fmtElapsed, type Log } from "./log.ts";
+import { InputError, readJsonFile } from "./errors.ts";
 import { CompareError, compareResults } from "./commands/compareResults.ts";
 import { comparisonCsv, comparisonMarkdown, renderComparison } from "./report/compareResults.ts";
 import { evaluateBenchPolicy, evaluateLspPolicy, exitStatus, parseMetricKeys, parsePolicy, PolicyError, renderDecision, type Policy, type PolicyDecision } from "./timing/policy.ts";
@@ -37,8 +38,13 @@ import { evaluateBenchPolicy, evaluateLspPolicy, exitStatus, parseMetricKeys, pa
 interface Opt {
   name: string;
   short?: string;
-  // The value's placeholder in help ("<n>"); absent for a flag.
+  // The value's placeholder in help ("<n>"); absent for a flag. It also says what checkValues takes:
+  // <n> a whole number; <ms>, <s>, <cores>, <fraction>, <p> a number; a|b|c one of those words.
   value?: string;
+  // <n>: the least whole number that means anything (1 for counts of rounds or files).
+  min?: number;
+  // A time limit: more than 0 (0 would mean no limit).
+  positive?: boolean;
   multiple?: boolean;
   // Shown in help only: the commands apply their own defaults.
   default?: string;
@@ -94,13 +100,13 @@ const ROUNDS: OptGroup = {
   title: "rounds and calls",
   opts: [
     { name: "threads", value: "both|default|single", default: "both", help: "thread modes each side runs in: as it chooses (default), single-threaded (single), or both; candidates are compared with the reference in the same mode" },
-    { name: "runs", value: "<n>", default: "6", help: "rounds before the first look at the calls" },
+    { name: "runs", value: "<n>", min: 1, default: "6", help: "rounds before the first look at the calls" },
     { name: "max-runs", value: "<n>", default: "the larger of 15 and --runs", help: "the most rounds while some call is unsettled (looks every 3 rounds after --runs)" },
-    { name: "min-runs", value: "<n>", default: "3", help: "the fewest accepted rounds a call needs; with fewer, a candidate is 'too few rounds'" },
+    { name: "min-runs", value: "<n>", min: 1, default: "3", help: "the fewest accepted rounds a call needs; with fewer, a candidate is 'too few rounds'" },
     { name: "resolution", value: "<fraction>", default: "0.05", help: "'same' means within this fraction of the reference..." },
     { name: "resolution-ms", value: "<ms>", default: "1", help: "...or within this many milliseconds, where that is larger" },
     { name: "warmup", value: "<n>", default: "1", help: "untimed runs per side before the rounds" },
-    { name: "attempts", value: "<n>", default: "3", help: "tries per round when a round is disturbed (a round in which a side failed is not retried)" },
+    { name: "attempts", value: "<n>", min: 1, default: "3", help: "tries per round when a round is disturbed (a round in which a side failed is not retried)" },
   ],
 };
 
@@ -145,17 +151,17 @@ const REPORT: OptGroup = { title: "report", opts: [FORMAT] };
 
 const CHECK: Opt[] = [
   { name: "config", value: "<file>", default: "tsconfig.json", help: "the tsconfig the check command builds ({config} in the profile), relative to --project; not a Parallax configuration file" },
-  { name: "timeout-ms", value: "<ms>", default: "600000", help: "a check that runs longer is killed, and its round fails" },
+  { name: "timeout-ms", value: "<ms>", positive: true, default: "600000", help: "a check that runs longer is killed, and its round fails" },
   { name: "counter-runs", value: "<n>", default: "3", help: "runs per side under perf stat after the timed rounds, counting instructions and cycles (where perf works; 0: none)" },
 ];
 
 const SESSION: OptGroup = {
   title: "editor session (0 skips a phase)",
   opts: [
-    { name: "files", value: "<n>", default: "6", help: "files to open, picked from the project as for lsp-diff; the first is edited" },
+    { name: "files", value: "<n>", min: 1, default: "6", help: "files to open, picked from the project as for lsp-diff; the first is edited" },
     { name: "file", value: "<rel>", multiple: true, help: "a file to open, relative to the project (instead of picking); repeat; the first is edited" },
     { name: "edits", value: "<n>", default: "20", help: "edit phase: one-character edits, each followed by a hover in another file and the diagnostics" },
-    { name: "interval-ms", value: "<ms>", default: "120", help: "typing phase: time between keys" },
+    { name: "interval-ms", value: "<ms>", positive: true, default: "120", help: "typing phase: time between keys" },
     { name: "lines", value: "<n>", default: "4", help: "typing phase (open loop): lines typed on schedule; latency counts from when each key was due" },
     { name: "service-lines", value: "<n>", default: "1", help: "service phase (closed loop): lines typed one request at a time" },
     { name: "paused-lines", value: "<n>", default: "1", help: "paused phase: lines typed with a pause before each key" },
@@ -163,7 +169,7 @@ const SESSION: OptGroup = {
     { name: "errfixes", value: "<n>", default: "5", help: "errfix phase: a type error added and removed, timing its diagnostics" },
     { name: "imports", value: "<n>", default: "3", help: "imports phase: names from other files completed and fixed with the add-import action" },
     { name: "long-edits", value: "<n>", default: "60", help: "long phase: edits in a row, for drift and memory growth per edit" },
-    { name: "request-timeout-ms", value: "<ms>", default: "120000", help: "a request unanswered this long ends the session as timed out" },
+    { name: "request-timeout-ms", value: "<ms>", positive: true, default: "120000", help: "a request unanswered this long ends the session as timed out" },
   ],
 };
 
@@ -180,12 +186,12 @@ const COMMANDS: Command[] = [
       {
         title: "session",
         opts: [
-          { name: "files", value: "<n>", default: "6", help: "files the session opens, picked from the project" },
+          { name: "files", value: "<n>", min: 1, default: "6", help: "files the session opens, picked from the project" },
           { name: "file", value: "<rel>", multiple: true, help: "a file to open, relative to the project (instead of picking); repeat for more" },
           { name: "positions", value: "<n>", default: "4", help: "positions per file for hover, definition, references, rename and the rest" },
-          { name: "ref-runs", value: "<n>", default: "2", help: "reference runs: answers where the reference disagrees with itself are ref-unstable and never blamed on a candidate" },
-          { name: "cand-runs", value: "<n>", default: "1", help: "runs per candidate; 2 also checks the candidates' stability" },
-          { name: "request-timeout-ms", value: "<ms>", default: "600000", help: "a request unanswered this long ends the session as timed out" },
+          { name: "ref-runs", value: "<n>", min: 1, default: "2", help: "reference runs: answers where the reference disagrees with itself are ref-unstable and never blamed on a candidate" },
+          { name: "cand-runs", value: "<n>", min: 1, default: "1", help: "runs per candidate; 2 also checks the candidates' stability" },
+          { name: "request-timeout-ms", value: "<ms>", positive: true, default: "600000", help: "a request unanswered this long ends the session as timed out" },
           { name: "ref-evidence", value: "<dir>", multiple: true, help: "a compatible earlier bundle whose reference answers count as reference variants; repeat for more" },
         ],
       },
@@ -247,7 +253,7 @@ const COMMANDS: Command[] = [
     run: async ({ values: o, positionals }) => {
       const format = formatOption(o);
       const dir = oneBundle("summary", positionals, "summary.json");
-      return printSummary(JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")) as Summary, format);
+      return printSummary(readJsonFile(join(dir, "summary.json")) as Summary, format);
     },
   },
   {
@@ -383,7 +389,7 @@ const COMMANDS: Command[] = [
     run: async ({ values: o, positionals }) => {
       const format = formatOption(o);
       const dir = oneBundle("bench-summary", positionals, "bundle.json");
-      const kind = (JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as { kind?: string }).kind;
+      const kind = (readJsonFile(join(dir, "bundle.json")) as { kind?: string }).kind;
       const policy = policyOption(o, kind === "lsp-bench" ? "lsp-bench" : "cli-bench");
       if (kind === "lsp-bench") {
         const bundle = readLspBenchBundle(dir);
@@ -811,6 +817,12 @@ async function runCommand(c: Command, args: string[]): Promise<number> {
     console.log(commandHelp(c));
     return 0;
   }
+  try {
+    checkValues(c, values, all);
+  } catch (e) {
+    if (e instanceof UsageError) e.command = c;
+    throw e;
+  }
   const missing = all.filter((x) => x.required && (values[x.name] === undefined || (Array.isArray(values[x.name]) && !(values[x.name] as string[]).length)));
   if (missing.length) throw new UsageError(`${c.name} needs ${list(missing.map((x) => `--${x.name}`))}`, c);
   const log = createLog({ quiet: values.quiet === true, elapsed: c.longRunning === true });
@@ -819,6 +831,64 @@ async function runCommand(c: Command, args: string[]): Promise<number> {
   } catch (e) {
     if (e instanceof UsageError && !e.command) e.command = c;
     throw e;
+  }
+}
+
+// Every option value the line gives, checked before the missing options are reported and before any
+// file is touched: told only that --project is missing, a user who also wrote `--runs abc` would learn
+// of that on the next try. The handlers check again and stay the authority, so this must never refuse
+// a value a handler takes; it uses their functions and messages where it can.
+function checkValues(c: Command, values: Values, opts: Opt[]): void {
+  for (const x of opts) {
+    const v = values[x.name];
+    if (!x.value || typeof v !== "string") continue;
+    if (x.name === "threads") roundThreads(values);
+    else if (x.name === "env") envOption(values);
+    else if (x.name === "pin") pinOption(v);
+    else if (x.value === "<n>") int(values, x.name, x.min ?? 0);
+    else if (x.value === "<p>") probability(values, x.name, x.default);
+    else if (["<ms>", "<s>", "<cores>", "<fraction>"].includes(x.value)) (x.positive ? positive : num)(values, x.name);
+    else if (x.value === "<key,...>") policyText(() => parseMetricKeys(v, `--${x.name}`));
+    else if (/^[\w-]+(\|[\w-]+)+$/.test(x.value)) {
+      const words = x.value.split("|");
+      if (!words.includes(v)) throw new UsageError(`--${x.name} wants ${list(words, "or")} (got ${JSON.stringify(v)})`);
+    }
+  }
+  const kinds = POLICY_KINDS[c.name];
+  if (!kinds) return;
+  // --fail-threshold's own value first: parsed without --fail-on, it would be told only that.
+  const threshold = str(values, "fail-threshold");
+  if (threshold !== undefined) policyText(() => parsePolicy({ failOn: "slower", threshold }, "cli-bench"));
+  // bench-summary learns the bundle's kind only from the bundle: a policy either kind takes may do.
+  const text = { failOn: str(values, "fail-on"), threshold, metrics: str(values, "fail-metrics") };
+  const errors: PolicyError[] = [];
+  for (const k of kinds) {
+    try {
+      parsePolicy(text, k);
+      return;
+    } catch (e) {
+      if (!(e instanceof PolicyError)) throw e;
+      errors.push(e);
+    }
+  }
+  // With --fail-metrics the policy is for an lsp-bench bundle: that kind's complaint is the one to show.
+  throw new UsageError(errors[text.metrics !== undefined ? errors.length - 1 : 0]!.message);
+}
+
+// The kinds of report each command's --fail-on is parsed for (as its handler parses it).
+const POLICY_KINDS: Record<string, Parameters<typeof parsePolicy>[1][]> = {
+  bench: ["cli-bench"],
+  "lsp-bench": ["lsp-bench"],
+  "bench-summary": ["cli-bench", "lsp-bench"],
+  "compare-results": ["compare-lsp-bench"],
+};
+
+// A PolicyError is a usage error.
+function policyText<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (e) {
+    throw e instanceof PolicyError ? new UsageError(e.message) : e;
   }
 }
 
@@ -880,8 +950,10 @@ function num(o: Values, name: string): number | undefined {
 
 // A whole number (counts of runs, edits, files): `min` 1 where 0 would mean nothing at all to do.
 function int(o: Values, name: string, min = 0): number | undefined {
-  const n = num(o, name);
-  if (n !== undefined && (!Number.isInteger(n) || n < min)) throw new UsageError(`--${name} wants a whole number${min ? ` of at least ${min}` : ""}`);
+  const v = o[name];
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (typeof v !== "string" || !Number.isInteger(n) || n < min) throw new UsageError(`--${name} wants a whole number${min ? ` of at least ${min}` : ""}`);
   return n;
 }
 
@@ -889,6 +961,13 @@ function int(o: Values, name: string, min = 0): number | undefined {
 function positive(o: Values, name: string): number | undefined {
   const n = num(o, name);
   if (n !== undefined && !(n > 0)) throw new UsageError(`--${name} wants a number more than 0`);
+  return n;
+}
+
+// A probability, strictly between 0 and 1 (--confidence).
+function probability(o: Values, name: string, example?: string): number | undefined {
+  const n = num(o, name);
+  if (n !== undefined && !(n > 0 && n < 1)) throw new UsageError(`--${name} wants a number between 0 and 1${example ? ` (${example})` : ""}`);
   return n;
 }
 
@@ -918,18 +997,10 @@ function lspSessionOptions(o: Values) {
 
 function roundOptions(o: Values) {
   const idleTimeout = num(o, "idle-timeout-s");
-  let threads: ThreadMode[] | undefined;
-  if (typeof o.threads === "string") {
-    try {
-      threads = parseThreadModes(o.threads);
-    } catch (e) {
-      throw new UsageError((e as Error).message);
-    }
-  }
   const env = envOption(o);
   return {
     ...defined({
-      threads,
+      threads: roundThreads(o),
       env,
       pin: typeof o.pin === "string" ? pinOption(o.pin) : undefined,
       runs: int(o, "runs", 1),
@@ -947,6 +1018,16 @@ function roundOptions(o: Values) {
     }),
     gates: gateOptions(o),
   };
+}
+
+// --threads: one mode, a comma list of them, or both.
+function roundThreads(o: Values): ThreadMode[] | undefined {
+  if (typeof o.threads !== "string") return undefined;
+  try {
+    return parseThreadModes(o.threads);
+  } catch (e) {
+    throw new UsageError((e as Error).message);
+  }
 }
 
 // Checked here, before anything runs (a suite run would otherwise fetch a project first); the
@@ -986,6 +1067,11 @@ function report(e: unknown): void {
   }
   if (e instanceof NotFoundError) {
     console.error(`error: ${e.message}`);
+    return;
+  }
+  // A mistake in what the user gave: the message is the whole story, so no hint to look at a stack.
+  if (e instanceof InputError) {
+    console.error(`error: ${process.env.PARALLAX_DEBUG === "1" ? (e.stack ?? e.message) : e.message}`);
     return;
   }
   const err = e instanceof Error ? e : new Error(String(e));

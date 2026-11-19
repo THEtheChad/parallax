@@ -27,6 +27,7 @@ import { bindSide, type Side } from "../profile/profile.ts";
 import { initializeSha256 } from "../session/initialize.ts";
 import { pickFiles, rel } from "../session/picker.ts";
 import { SCRIPT_ID, TYPED, type ScriptSpec } from "../session/script.ts";
+import { InputError } from "../errors.ts";
 
 export interface LspDiffOptions {
   project: string;
@@ -47,20 +48,20 @@ export interface LspDiffOptions {
 
 export function prepareBundleDir(out: string): string {
   const dir = resolve(out);
-  if (existsSync(dir) && readdirSync(dir).length) throw new Error(`bundle directory ${dir} exists and is not empty`);
+  if (existsSync(dir) && readdirSync(dir).length) throw new InputError(`bundle directory ${dir} exists and is not empty`);
   mkdirSync(join(dir, "runs"), { recursive: true });
   return dir;
 }
 
 export async function lspDiff(opts: LspDiffOptions): Promise<{ dir: string; bundle: Bundle; summary: Summary }> {
   const root = resolve(opts.project);
-  if (!existsSync(root)) throw new Error(`no project at ${root}`);
-  if (!opts.cands.length) throw new Error("at least one --cand is needed");
+  if (!existsSync(root)) throw new InputError(`no project at ${root}`);
+  if (!opts.cands.length) throw new InputError("at least one --cand is needed");
   const ref = await bindSide(opts.ref, "ref", opts.env ? { env: opts.env } : {});
   const cands: Side[] = [];
   for (const c of opts.cands) cands.push(await bindSide(c, "cand", opts.env ? { env: opts.env } : {}));
   const labels = [ref, ...cands].map((s) => s.label);
-  if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")}); use <label>:<profile>=<bin>`);
+  if (new Set(labels).size !== labels.length) throw new InputError(`side labels must be unique (got ${labels.join(", ")}); use <label>:<profile>=<bin>`);
 
   const dir = prepareBundleDir(opts.out);
   const files = pickFiles(root, opts.files, opts.file);

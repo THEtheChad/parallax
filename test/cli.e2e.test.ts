@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -77,13 +77,83 @@ test("errors: a missing bundle is one line; a harness error is one line, with it
     assert.equal(r.status, 2);
     assert.equal(r.stderr, `error: no bundle at ${dir}: ${file} not found\n`);
   }
-  const args = ["bench", "--project", join(tmpdir(), "parallax-no-such-project"), "--ref", side("fake-check-ref", "ref"), "--cand", side("fake-check-fast", "fast"), "--out", join(mkdtempSync(join(tmpdir(), "parallax-cli-")), "b")];
-  const plain = run(args);
+  // A bundle.json cut down to its header: the harness trips over what is not there.
+  const cut = mkdtempSync(join(tmpdir(), "parallax-cli-cut-"));
+  writeFileSync(join(cut, "bundle.json"), JSON.stringify({ schema: "parallax.bundle/1", kind: "lsp-answer-diff" }));
+  const plain = run(["compare", cut]);
   assert.equal(plain.status, 2);
-  assert.match(plain.stderr, /^error: no project at .* \(PARALLAX_DEBUG=1 shows the stack\)\n$/);
-  const debug = run(args, { PARALLAX_DEBUG: "1" });
+  assert.match(plain.stderr, /^error: .* \(PARALLAX_DEBUG=1 shows the stack\)\n$/);
+  const debug = run(["compare", cut], { PARALLAX_DEBUG: "1" });
   assert.equal(debug.status, 2);
   assert.match(debug.stderr, STACK);
+});
+
+test("value errors: reported before missing options and before any file is read", () => {
+  const cases: [string[], RegExp][] = [
+    [["bench", "--runs", "abc"], /^error: --runs wants a whole number of at least 1\n\nusage: parallax bench /],
+    [["bench", "--runs", "0"], /^error: --runs wants a whole number of at least 1\n/],
+    [["bench", "--format", "yaml"], /^error: --format wants text, md, json or csv \(got "yaml"\)\n/],
+    [["bench", "--threads", "many"], /^error: --threads: want default, single or both \(got "many"\)\n/],
+    [["bench", "--timeout-ms", "0"], /^error: --timeout-ms wants a number more than 0\n/],
+    [["bench", "--env", "inherit", "--pass-env", "X"], /^error: --pass-env only applies to --env sealed\n/],
+    [["bench", "--fail-threshold", "0.5"], /^error: --fail-threshold wants a ratio of at least 1 /],
+    [["lsp-bench", "--fail-on", "output"], /^error: --fail-on "output" does not apply here/],
+    [["calibrate", "--kind", "bogus"], /^error: --kind wants bench or lsp-bench \(got "bogus"\)\n/],
+    [["bench-summary", "/nonexistent", "--fail-on", "worse"], /^error: --fail-on "worse" does not apply here: use slower, output, unresolved\n/],
+    [["compare-results", "/nonexistent/a", "/nonexistent/b", "--confidence", "2"], /^error: --confidence wants a number between 0 and 1 \(0\.95\)\n/],
+  ];
+  for (const [args, want] of cases) {
+    const r = run(args);
+    assert.equal(r.status, 2, args.join(" "));
+    assert.match(r.stderr, want, args.join(" "));
+  }
+  // What the handlers take passes: the comma list of thread modes, a condition only one bundle kind has.
+  assert.match(run(["bench", "--threads", "default,single", "--format", "md", "--fail-on", "slower", "--fail-threshold", "1.1"]).stderr, /^error: bench needs --project/);
+  assert.match(run(["bench-summary", "/nonexistent", "--fail-on", "output"]).stderr, /^error: no bundle at /);
+  assert.match(run(["bench-summary", "/nonexistent", "--fail-on", "slower", "--fail-metrics", "typing.completionP95Ms"]).stderr, /^error: no bundle at /);
+});
+
+test("input errors: what the user gave is wrong, one line without the PARALLAX_DEBUG hint, exit 2", () => {
+  const base = mkdtempSync(join(tmpdir(), "parallax-cli-"));
+  const full = join(base, "full");
+  mkdirSync(full);
+  writeFileSync(join(full, "x"), "");
+  const project = makeProject();
+  const bench = (...more: string[]) => ["bench", "--project", project, "--ref", side("fake-check-ref", "ref"), "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b"), ...more];
+  const cases: [string[], RegExp][] = [
+    [["bench", "--project", project, "--ref", `bogusprofile=${fake}`, "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: no profile "bogusprofile" \(looked for .*\); the profiles are .*\btsc7\b.*, or give a profile's path\n$/],
+    [["bench", "--project", join(base, "no-such-project"), "--ref", side("fake-check-ref", "ref"), "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: no project at .*\n$/],
+    [["bench", "--project", base, "--ref", side("fake-check-ref", "ref"), "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: no tsconfig\.json in .*\n$/],
+    [bench("--max-runs", "2"), /^error: --max-runs 2 is less than --runs 6\n$/],
+    [["bench", "--project", project, "--ref", "fake-check-ref", "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: side "fake-check-ref": want <profile>=<binary> /],
+    [[...bench().slice(0, -2), "--out", full, "--threads", "default"], /^error: bundle directory .* exists and is not empty\n$/],
+  ];
+  for (const [args, want] of cases) {
+    const r = run(args);
+    assert.equal(r.status, 2, `${args.join(" ")}\n${r.stderr}`);
+    assert.match(r.stderr, want, args.join(" "));
+    assert.doesNotMatch(r.stderr, /PARALLAX_DEBUG/);
+  }
+  // The stack is still there for whoever asks.
+  assert.match(run(bench("--max-runs", "2"), { PARALLAX_DEBUG: "1" }).stderr, STACK);
+  // A JSON file named on the command line that is not JSON: said so, on one line.
+  const bad = join(base, "bad");
+  mkdirSync(bad);
+  writeFileSync(join(bad, "summary.json"), "kind,label\n1,2\n");
+  const summary = run(["summary", bad]);
+  assert.equal(summary.status, 2);
+  assert.match(summary.stderr, /^error: .*summary\.json: not JSON \(Unexpected token [^\n]*\)\n$/);
+});
+
+test("verify-result: a file that is not JSON fails verification, on one line, and the rest are still checked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "parallax-cli-verify-"));
+  const csv = join(dir, "bench.csv");
+  writeFileSync(csv, "kind,label\n1,2\n");
+  const r = run(["verify-result", csv, csv]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout.match(/^FAILED /gm)?.length, 2);
+  assert.match(r.stdout, /^FAILED .*bench\.csv\n {2}not JSON \(Unexpected token [^\n]*\)$/m);
+  assert.equal(r.stderr, "");
 });
 
 test("--version: the package version, the harness commit and Node's version", () => {

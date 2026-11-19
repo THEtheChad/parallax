@@ -38,6 +38,7 @@ import { warn as warnLog, type LogFn } from "../log.ts";
 import { parsePinning, type Pinning } from "../host/pinning.ts";
 import { DEFAULT_ENV_POLICY, type EnvPolicy } from "../host/sealedEnv.ts";
 import { checkCalibration, hostKey, loadCalibration, type CalibrationRef } from "../timing/calibration.ts";
+import { InputError, readJsonFile } from "../errors.ts";
 
 export interface LspBenchSettings {
   // Thread modes each server runs in (absent in bundles from before modes: default only).
@@ -111,7 +112,7 @@ const offIfUnlimited = (g: Gates): Gates => ({
 
 export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bundle: LspBenchBundle; summary: LspBenchSummary }> {
   const root = resolve(opts.project);
-  if (!existsSync(root)) throw new Error(`no project at ${root}`);
+  if (!existsSync(root)) throw new InputError(`no project at ${root}`);
   const settings: LspBenchSettings = {
     threads: opts.threads ?? [...THREAD_MODES],
     files: opts.files ?? 6,
@@ -139,17 +140,17 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   };
   const host = hostInfo();
   if (opts.pin !== undefined) settings.pin = parsePinning(opts.pin, host.state.affinity?.list ?? null);
-  if (settings.minRounds > settings.runs) throw new Error(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
-  if (settings.maxRuns < settings.runs) throw new Error(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
-  if (!(settings.intervalMs > 0)) throw new Error("--interval-ms must be more than 0");
+  if (settings.minRounds > settings.runs) throw new InputError(`--min-runs ${settings.minRounds} is more than --runs ${settings.runs}`);
+  if (settings.maxRuns < settings.runs) throw new InputError(`--max-runs ${settings.maxRuns} is less than --runs ${settings.runs}`);
+  if (!(settings.intervalMs > 0)) throw new InputError("--interval-ms must be more than 0");
   const bound: Side[] = [await bindSide(opts.ref, "ref", { env: settings.env! })];
   for (const c of opts.cands) bound.push(await bindSide(c, "cand", { env: settings.env! }));
   const sides = sidesInModes(bound, settings.threads, "lsp");
   const labels = sides.map((s) => s.label);
-  if (new Set(labels).size !== labels.length) throw new Error(`side labels must be unique (got ${labels.join(", ")})`);
+  if (new Set(labels).size !== labels.length) throw new InputError(`side labels must be unique (got ${labels.join(", ")})`);
 
   const files = pickFiles(root, settings.files, opts.file);
-  if (!files.length) throw new Error(`no TypeScript files found in ${root}`);
+  if (!files.length) throw new InputError(`no TypeScript files found in ${root}`);
   const spec: LspTimingSpec = {
     root,
     files,
@@ -282,8 +283,8 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
 }
 
 export function readLspBenchBundle(dir: string): LspBenchBundle {
-  const b = JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as LspBenchBundle;
-  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "lsp-bench") throw new Error(`${dir}: not a ${BUNDLE_SCHEMA} lsp-bench bundle`);
+  const b = readJsonFile(join(dir, "bundle.json")) as LspBenchBundle;
+  if (b.schema !== BUNDLE_SCHEMA || b.kind !== "lsp-bench") throw new InputError(`${dir}: not a ${BUNDLE_SCHEMA} lsp-bench bundle`);
   return b;
 }
 

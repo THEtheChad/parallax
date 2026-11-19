@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { InputError } from "../errors.ts";
 
 export type AccountingKind = "gnu-time" | "bsd-time" | "none";
 
@@ -82,8 +83,8 @@ export function detectAccounting(): Accounting {
   const all = [gnu, bsd, none];
   if (forced) {
     const a = all.find((x) => x.kind === forced);
-    if (!a) throw new Error(`PARALLAX_ACCOUNTING=${forced}: want one of ${all.map((x) => x.kind).join(", ")}`);
-    if (a !== none && !works(a)) throw new Error(`PARALLAX_ACCOUNTING=${forced} does not work on this machine`);
+    if (!a) throw new InputError(`PARALLAX_ACCOUNTING=${forced}: want one of ${all.map((x) => x.kind).join(", ")}`);
+    if (a !== none && !works(a)) throw new InputError(`PARALLAX_ACCOUNTING=${forced} does not work on this machine`);
     return (detected = a);
   }
   detected = !existsSync(TIME) ? none : works(gnu) ? gnu : works(bsd) ? bsd : none;
