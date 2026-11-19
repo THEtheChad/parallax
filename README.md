@@ -230,6 +230,41 @@ cannot be verified, so publishing from one needs `--allow-dirty`.
 `parallax verify-result <file>...` checks that a result is unedited and that its summary is what its
 records give.
 
+## Comparing runs, and a CI policy
+
+```sh
+pnpm parallax compare-results <old> <new>          # result files or bench / lsp-bench bundle directories
+pnpm parallax compare-results main.json pr.json --fail-on worse --fail-threshold 1.05
+```
+
+Compares two saved runs of the same project: for each candidate (and lsp-bench metric) present in
+both, its per-round ratio to the in-run reference, new against old, as a ratio of ratios with a
+two-sample interval (`new/old 1.07x (1.02x..1.12x)`) and a call: `better`, `worse`, `same ±r`,
+`unresolved` or `too few rounds`. Calls are at 95% for the whole report (`--confidence`), split over its
+comparisons; `--metrics <key,...>` narrows an lsp-bench comparison; `--resolution` and
+`--resolution-ms` are as for bench. Runs of different projects are refused unless
+`--allow-project-change`; another machine, harness commit, workload setting or binary is named in a
+warning (a changed candidate binary is usually the point). `--format json` prints the comparison as one
+object.
+
+`bench`, `lsp-bench` and `bench-summary` take `--fail-on <conditions>`, a policy evaluated after
+measuring and kept apart from whether the measurement was clean: `slower` (any `slower` call; for
+lsp-bench any compared metric, or those in `--fail-metrics <key,...>`), `output` (bench: an output
+DIFFERENT from the reference's or UNSTABLE), `unresolved` (an unsettled call or a noisy candidate).
+`--fail-threshold 1.10` fails `slower` only when the whole interval is above 1.10. `compare-results`
+takes `--fail-on worse,unresolved`. The decision, naming each failing candidate and metric, is printed
+after the report (on stderr for the bench commands, so stdout stays the report).
+
+| exit | bench, lsp-bench, bench-summary | compare-results |
+| --- | --- | --- |
+| 0 | measured cleanly; the policy (if any) passed | compared; the policy (if any) passed |
+| 1 | not measured cleanly (decides before the policy) | - |
+| 2 | usage or harness error | usage error, or runs that cannot be compared |
+| 3 | measured cleanly; the `--fail-on` policy failed | the `--fail-on` policy failed |
+
+The statistics and their limits are in [docs/measurement.md](docs/measurement.md) ("A CI policy" and
+"Comparing two runs").
+
 ## Profiles
 
 `profiles/tsc7.json`, `profiles/tsrs.json`, `profiles/tsc-rs-fork.json`. A profile declares the

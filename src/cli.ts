@@ -27,6 +27,9 @@ import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
 import { formatBench, formatCalibration, formatLspBench, formatSummary, FORMATS, parseFormat, type Format } from "./report/render.ts";
 import { createLog, fmtElapsed, type Log } from "./log.ts";
+import { CompareError, compareResults } from "./commands/compareResults.ts";
+import { comparisonCsv, comparisonMarkdown, renderComparison } from "./report/compareResults.ts";
+import { evaluateBenchPolicy, evaluateLspPolicy, exitStatus, parseMetricKeys, parsePolicy, PolicyError, renderDecision, type Policy, type PolicyDecision } from "./timing/policy.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Options and commands
@@ -113,6 +116,27 @@ const MACHINE: OptGroup = {
 };
 
 const ENVIRONMENT: OptGroup = { title: "environment", opts: [...ENV, PIN] };
+
+// --fail-on: a CI policy judged on the summary, apart from whether the measurement was clean
+// (timing/policy.ts). Exit 3 when it fails.
+const FAIL_THRESHOLD: Opt = { name: "fail-threshold", value: "<ratio>", help: "fail slower/worse only when the whole interval is above this ratio (1.10: more than 10% slower)" };
+const POLICY = (kind: "bench" | "lsp-bench" | "both"): OptGroup => ({
+  title: "CI policy (exit 3 when it fails)",
+  opts: [
+    {
+      name: "fail-on",
+      value: "<list>",
+      help:
+        kind === "bench"
+          ? "comma list: slower (a call slower), output (an output DIFFERENT from the reference's, or UNSTABLE), unresolved (a call unresolved or too few rounds; the bench not settled)"
+          : kind === "lsp-bench"
+            ? "comma list: slower (a compared metric slower or higher), unresolved (a call unresolved or too few rounds; the bench not settled)"
+            : "comma list: slower, output (bench bundles only), unresolved; see bench --help and lsp-bench --help",
+    },
+    FAIL_THRESHOLD,
+    ...(kind === "bench" ? [] : [{ name: "fail-metrics", value: "<key,...>", help: "lsp-bench: judge only these metrics (keys as in summary.json, e.g. typing.completionP95Ms)" }]),
+  ],
+});
 
 // How the report on stdout is written: text for a terminal, md for a PR comment or
 // $GITHUB_STEP_SUMMARY, json (the summary itself: README has the contract), csv (one row per figure).
@@ -238,6 +262,7 @@ const COMMANDS: Command[] = [
       ROUNDS,
       MACHINE,
       ENVIRONMENT,
+      POLICY("bench"),
       REPORT,
     ],
     examples: [
@@ -247,6 +272,7 @@ const COMMANDS: Command[] = [
     exit: "0 measured cleanly, 1 not measured cleanly (too few rounds, a side failed), 2 usage or harness error",
     run: async ({ values: o, log }) => {
       const format = formatOption(o);
+      const policy = policyOption(o, "cli-bench");
       const t0 = performance.now();
       const r = await bench({
         project: o.project as string,
@@ -259,7 +285,7 @@ const COMMANDS: Command[] = [
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
       console.log(formatBench(r.summary, format));
-      return r.summary.clean ? 0 : 1;
+      return decide(r.summary.clean, policy && evaluateBenchPolicy(r.summary, policy));
     },
   },
   {
@@ -269,7 +295,7 @@ const COMMANDS: Command[] = [
     about:
       "Times each side's language server in the same rounds as bench, through one editor session per side per round: open (time to first diagnostics), edit (first request after an edit, CPU per edit), typing (latency from when each key was due, CPU per key), service (closed loop: the server's own time per request), paused (keys after quiet), errfix (an error shown and cleared), imports (cross-file completion and the add-import fix), long (drift and memory growth per edit). Every request of every session is kept in the bundle.",
     longRunning: true,
-    options: [{ title: "sides and project", opts: [PROJECT, REF, CAND, OUT] }, SESSION, ROUNDS, MACHINE, ENVIRONMENT, REPORT],
+    options: [{ title: "sides and project", opts: [PROJECT, REF, CAND, OUT] }, SESSION, ROUNDS, MACHINE, ENVIRONMENT, POLICY("lsp-bench"), REPORT],
     examples: [
       "parallax lsp-bench --project ~/src/umami --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/umami-lsp",
       "parallax lsp-bench ... --threads default --long-edits 0 --imports 0",
@@ -277,6 +303,7 @@ const COMMANDS: Command[] = [
     exit: "0 measured cleanly, 1 not measured cleanly (too few rounds, a session failed), 2 usage or harness error",
     run: async ({ values: o, log }) => {
       const format = formatOption(o);
+      const policy = policyOption(o, "lsp-bench");
       const t0 = performance.now();
       const r = await lspBench({
         project: o.project as string,
@@ -289,7 +316,7 @@ const COMMANDS: Command[] = [
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
       console.log(formatLspBench(r.summary, format));
-      return r.summary.clean ? 0 : 1;
+      return decide(r.summary.clean, policy && evaluateLspPolicy(r.summary, policy));
     },
   },
   {
@@ -350,23 +377,82 @@ const COMMANDS: Command[] = [
     usage: "bench-summary <bundle-dir> [--max-outside-cores <cores>] [--max-canary-drift <fraction>] [--format text|md|json|csv]",
     about: "Recomputes summary.json of a bench or lsp-bench bundle from samples.jsonl, which keeps every sample and round, rejected ones included, and prints the report again. Other gates can be tried after the fact.",
     positionals: true,
-    options: [{ title: "gates", opts: MACHINE.opts.filter((x) => x.name.startsWith("max-") && x.name !== "max-busy-cores").map((x) => ({ ...x, default: "the bundle's" })) }, REPORT],
+    options: [{ title: "gates", opts: MACHINE.opts.filter((x) => x.name.startsWith("max-") && x.name !== "max-busy-cores").map((x) => ({ ...x, default: "the bundle's" })) }, POLICY("both"), REPORT],
     examples: ["parallax bench-summary /tmp/hono-bench --max-outside-cores 0.5"],
     exit: "0 measured cleanly, 1 not measured cleanly, 2 usage or harness error",
     run: async ({ values: o, positionals }) => {
       const format = formatOption(o);
       const dir = oneBundle("bench-summary", positionals, "bundle.json");
       const kind = (JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as { kind?: string }).kind;
+      const policy = policyOption(o, kind === "lsp-bench" ? "lsp-bench" : "cli-bench");
       if (kind === "lsp-bench") {
         const bundle = readLspBenchBundle(dir);
         const summary = summarizeLspBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
         console.log(formatLspBench(summary, format));
-        return summary.clean ? 0 : 1;
+        return decide(summary.clean, policy && evaluateLspPolicy(summary, policy));
       }
       const bundle = readBenchBundle(dir);
       const summary = summarizeBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
       console.log(formatBench(summary, format));
-      return summary.clean ? 0 : 1;
+      return decide(summary.clean, policy && evaluateBenchPolicy(summary, policy));
+    },
+  },
+  {
+    name: "compare-results",
+    summary: "compare two saved runs of the same project: did the candidates get faster or slower?",
+    usage: "compare-results <old> <new> [options]",
+    about:
+      "Compares two saved runs (published result files, or bench / lsp-bench bundle directories) of the same project: for each candidate (and lsp-bench metric), its per-round ratios to the reference in the new run against those in the old. The runs are independent, so this is a two-sample comparison (Hodges-Lehmann shift of the log ratios, with a Mann-Whitney interval), Bonferroni-corrected over every row so the confidence holds for the whole report. Ratios to the in-run reference cancel most of a difference in machine speed; absolute times are shown only when both runs come from the same machine. docs/measurement.md, \"Comparing two runs\", is the method.",
+    positionals: true,
+    options: [
+      {
+        title: "comparison",
+        opts: [
+          { name: "resolution", value: "<fraction>", default: "0.05", help: "new/old within this fraction is the same" },
+          { name: "resolution-ms", value: "<ms>", default: "1", help: "lsp-bench: or within this many milliseconds of the old candidate's time" },
+          { name: "confidence", value: "<p>", default: "0.95", help: "for the whole report (Bonferroni over its rows)" },
+          { name: "metrics", value: "<key,...>", help: "lsp-bench: compare only these metrics (narrows the report, the policy and the correction)" },
+          { name: "allow-project-change", help: "compare runs of different project commits" },
+        ],
+      },
+      { title: "CI policy (exit 3 when it fails)", opts: [{ name: "fail-on", value: "<list>", help: "comma list: worse (a call worse), unresolved (a call unresolved or too few rounds, or a candidate noisy or failed in either run)" }, FAIL_THRESHOLD] },
+      { title: "report", opts: [{ ...FORMAT, help: "text, md (GitHub Markdown), json (the comparison object, with the policy decision), csv (one row per comparison)" }] },
+    ],
+    examples: ["parallax compare-results results/main.json results/branch.json --fail-on worse", "parallax compare-results /tmp/hono-bench-main /tmp/hono-bench-pr --format json"],
+    exit: "0 compared (and the --fail-on policy passed), 2 usage error or runs that cannot be compared, 3 the --fail-on policy failed",
+    run: async ({ values: o, positionals }) => {
+      if (positionals.length !== 2) throw new UsageError("compare-results needs two runs: <old> <new> (result files or bundle directories)");
+      const format = formatOption(o);
+      const confidence = num(o, "confidence");
+      if (confidence !== undefined && !(confidence > 0 && confidence < 1)) throw new UsageError("--confidence wants a number between 0 and 1 (0.95)");
+      let policy: Policy | null;
+      let metrics: string[] | null = null;
+      try {
+        // The kind is not known until the runs are read; a CLI bench refuses --metrics there.
+        policy = parsePolicy({ failOn: str(o, "fail-on"), threshold: str(o, "fail-threshold") }, "compare-lsp-bench");
+        if (typeof o.metrics === "string") metrics = parseMetricKeys(o.metrics, "--metrics");
+      } catch (e) {
+        throw e instanceof PolicyError ? new UsageError(e.message) : e;
+      }
+      for (const p of positionals) if (!existsSync(p)) throw new NotFoundError(`no run at ${resolve(p)}`);
+      const resolution = num(o, "resolution");
+      const resolutionMs = num(o, "resolution-ms");
+      let c;
+      try {
+        c = compareResults(positionals[0]!, positionals[1]!, {
+          ...(resolution !== undefined || resolutionMs !== undefined ? { resolution: { relative: resolution ?? 0.05, floorMs: resolutionMs ?? 1 } } : {}),
+          ...defined({ confidence }),
+          metrics,
+          allowProjectChange: o["allow-project-change"] === true,
+          policy,
+        });
+      } catch (e) {
+        if (!(e instanceof CompareError)) throw e;
+        console.error(`error: compare-results: ${e.message}`);
+        return 2;
+      }
+      console.log(format === "json" ? JSON.stringify(c, null, 2) : format === "md" ? comparisonMarkdown(c) : format === "csv" ? comparisonCsv(c) : renderComparison(c));
+      return exitStatus(true, c.policy);
     },
   },
   {
@@ -516,6 +602,23 @@ function printSummary(summary: Summary, format: Format): number {
   return summary.clean ? 0 : 1;
 }
 
+const str = (o: Values, k: string): string | undefined => (typeof o[k] === "string" ? (o[k] as string) : undefined);
+
+function policyOption(o: Values, kind: "cli-bench" | "lsp-bench"): Policy | null {
+  try {
+    return parsePolicy({ failOn: str(o, "fail-on"), threshold: str(o, "fail-threshold"), metrics: str(o, "fail-metrics") }, kind);
+  } catch (e) {
+    throw e instanceof PolicyError ? new UsageError(e.message) : e;
+  }
+}
+
+// The policy's decision goes to stderr after the report, even with --quiet: CI logs show it, and
+// stdout stays the report alone (a --format json consumer reads stdout).
+function decide(clean: boolean, decision: PolicyDecision | null): number {
+  if (decision) console.error(renderDecision(decision, clean));
+  return exitStatus(clean, decision);
+}
+
 function formatOption(o: Values): Format {
   try {
     return parseFormat(typeof o.format === "string" ? o.format : undefined);
@@ -535,7 +638,8 @@ const generalOpts = (c: Command): Opt[] => (c.longRunning ? [QUIET, ...GENERAL] 
 const EXIT_STATUS = `exit status:
   0  clean: no differences, every session clean, every bench measured cleanly
   1  a finding: differences, an unclean session, or a bench not measured cleanly
-  2  usage or harness error`;
+  2  usage or harness error (compare-results: runs that cannot be compared)
+  3  measured cleanly, but the --fail-on policy failed (bench, lsp-bench, bench-summary, compare-results)`;
 
 const OVERVIEW_EXAMPLES = [
   "parallax bench --project ~/src/hono --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/hono-bench",
