@@ -126,6 +126,9 @@ test("input errors: what the user gave is wrong, one line without the PARALLAX_D
     [["bench", "--project", base, "--ref", side("fake-check-ref", "ref"), "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: no tsconfig\.json in .*\n$/],
     [bench("--max-runs", "2"), /^error: --max-runs 2 is less than --runs 6\n$/],
     [["bench", "--project", project, "--ref", "fake-check-ref", "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: side "fake-check-ref": want <profile>=<binary> /],
+    // An unset shell variable (`tsc7=$TSGO`) leaves the path empty; a directory is not a binary either.
+    [["bench", "--project", project, "--ref", "tsc7=", "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: side "tsc7=": no binary path after "=" \(an unset shell variable\?\)\n$/],
+    [["bench", "--project", project, "--ref", `tsc7=${base}`, "--cand", side("fake-check-fast", "fast"), "--out", join(base, "b")], /^error: side "tsc7=.*": .* is a directory, not a binary\n$/],
     [[...bench().slice(0, -2), "--out", full, "--threads", "default"], /^error: bundle directory .* exists and is not empty\n$/],
   ];
   for (const [args, want] of cases) {

@@ -4,7 +4,7 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { baseEnv, DEFAULT_ENV_POLICY, type BaseEnv, type EnvMode, type EnvPolicy } from "../host/sealedEnv.ts";
@@ -259,8 +259,13 @@ export async function bindSide(spec: string, role: Role, opts: BindOptions = {})
   const labelled = /^[A-Za-z]:[\\/]/.test(left) ? null : /^([\w.-]+):(.+)$/.exec(left);
   const [label, profileName] = labelled ? [labelled[1], labelled[2]!] : [undefined, left];
   const { profile, path: profilePath } = loadProfile(profileName);
-  const bin = resolve(spec.slice(eq + 1));
+  const given = spec.slice(eq + 1);
+  // Empty most often means an unset shell variable (`tsc7=$TSGO`), which would otherwise resolve to
+  // the working directory and fail later with EISDIR.
+  if (!given) throw new InputError(`side ${JSON.stringify(spec)}: no binary path after "=" (an unset shell variable?)`);
+  const bin = resolve(given);
   if (!existsSync(bin)) throw new InputError(`side ${JSON.stringify(spec)}: no binary at ${bin}`);
+  if (statSync(bin).isDirectory()) throw new InputError(`side ${JSON.stringify(spec)}: ${bin} is a directory, not a binary`);
   const binReal = realpathSync(bin);
   const vars: Vars = { bin: isAbsolute(bin) ? bin : resolve(bin), binDir: dirname(binReal) };
   const env = resolveEnv(profile, baseEnv(envPolicy), opts.extraEnv ?? {});
