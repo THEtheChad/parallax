@@ -19,6 +19,7 @@ import { loadSuite, suiteProjectFor } from "../suite/suite.ts";
 import { warn, type LogFn } from "../log.ts";
 import { readBenchBundle, summarizeBenchRecords, type BenchBundle, type Records as BenchRecords } from "./bench.ts";
 import { readLspBenchBundle, summarizeLspBenchRecords, type LspBenchBundle, type Records as LspRecords } from "./lspBench.ts";
+import { InputError, notJson, readJsonFile } from "../errors.ts";
 
 export const RESULT_SCHEMA = "parallax.result/1";
 
@@ -104,12 +105,12 @@ export interface PublishOptions {
 }
 
 export function publish(opts: PublishOptions): { file: string; result: PublishedResult } {
-  const raw = JSON.parse(readFileSync(join(opts.bundleDir, "bundle.json"), "utf8")) as { kind?: string };
+  const raw = readJsonFile(join(opts.bundleDir, "bundle.json")) as { kind?: string };
   const bundle: BenchBundle | LspBenchBundle = raw.kind === "lsp-bench" ? readLspBenchBundle(opts.bundleDir) : readBenchBundle(opts.bundleDir);
-  if (bundle.status !== "complete") throw new Error(`${opts.bundleDir}: the bench did not complete (status ${bundle.status})`);
+  if (bundle.status !== "complete") throw new InputError(`${opts.bundleDir}: the bench did not complete (status ${bundle.status})`);
   if (!bundle.harness.gitCommit || bundle.harness.gitDirty) {
     const why = bundle.harness.gitCommit ? "had uncommitted changes" : "was not a git checkout";
-    if (!opts.allowDirty) throw new Error(`the harness that made this bundle ${why}, so no one can recompute its summary; pass --allow-dirty to publish it anyway`);
+    if (!opts.allowDirty) throw new InputError(`the harness that made this bundle ${why}, so no one can recompute its summary; pass --allow-dirty to publish it anyway`);
     warn(opts.log, `the harness ${why}; the result cannot be verified`);
   }
   const records = readRecords(opts.bundleDir);
@@ -169,7 +170,16 @@ export interface Verification {
 
 export function verifyResult(file: string): Verification {
   const problems: string[] = [];
-  const r = JSON.parse(readFileSync(file, "utf8")) as PublishedResult;
+  // The wrong file (a CSV report, a bundle's samples) is a result that does not check out, like one
+  // of another schema, so the files after it are still verified.
+  const text = readFileSync(file, "utf8");
+  let r: PublishedResult;
+  try {
+    r = JSON.parse(text) as PublishedResult;
+  } catch (e) {
+    return { ok: false, problems: [notJson(e)], harnessDiffers: false };
+  }
+  if (!r || typeof r !== "object") return { ok: false, problems: ["not a result (not a JSON object)"], harnessDiffers: false };
   if (r.schema !== RESULT_SCHEMA) return { ok: false, problems: [`schema is ${JSON.stringify(r.schema)}, not ${RESULT_SCHEMA}`], harnessDiffers: false };
   if (r.kind !== "cli-bench" && r.kind !== "lsp-bench") problems.push(`unknown kind ${JSON.stringify(r.kind)}`);
   const { id, ...rest } = r;

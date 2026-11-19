@@ -4,10 +4,11 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync, readFileSync, realpathSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { baseEnv, DEFAULT_ENV_POLICY, type BaseEnv, type EnvMode, type EnvPolicy } from "../host/sealedEnv.ts";
+import { InputError, readJsonFile } from "../errors.ts";
 
 export const PROFILE_SCHEMA = "parallax.profile/1";
 
@@ -48,7 +49,7 @@ export const SINGLE_SUFFIX = "@1t";
 export const BUILTIN_PROFILE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../profiles");
 
 function fail(where: string, msg: string): never {
-  throw new Error(`profile ${where}: ${msg}`);
+  throw new InputError(`profile ${where}: ${msg}`);
 }
 
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
@@ -105,14 +106,28 @@ export function validateProfile(value: unknown, where: string): Profile {
   return p as unknown as Profile;
 }
 
+// The built-in profiles' names (profiles/<name>.json).
+export function builtinProfiles(): string[] {
+  try {
+    return readdirSync(BUILTIN_PROFILE_DIR)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.slice(0, -".json".length))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 // A profile by built-in name (profiles/<name>.json) or by path.
 export function loadProfile(nameOrPath: string): { profile: Profile; path: string } {
-  const path =
-    nameOrPath.endsWith(".json") || /[\\/]/.test(nameOrPath) || isAbsolute(nameOrPath)
-      ? resolve(nameOrPath)
-      : join(BUILTIN_PROFILE_DIR, `${nameOrPath}.json`);
-  if (!existsSync(path)) throw new Error(`no profile ${JSON.stringify(nameOrPath)} (looked for ${path})`);
-  return { profile: validateProfile(JSON.parse(readFileSync(path, "utf8")), path), path };
+  const byPath = nameOrPath.endsWith(".json") || /[\\/]/.test(nameOrPath) || isAbsolute(nameOrPath);
+  const path = byPath ? resolve(nameOrPath) : join(BUILTIN_PROFILE_DIR, `${nameOrPath}.json`);
+  if (!existsSync(path)) {
+    // A name rather than a path: the likely mistake is the name, so say which ones there are.
+    const known = byPath ? [] : builtinProfiles();
+    throw new InputError(`no profile ${JSON.stringify(nameOrPath)} (looked for ${path})${known.length ? `; the profiles are ${known.join(", ")}, or give a profile's path` : ""}`);
+  }
+  return { profile: validateProfile(readJsonFile(path), path), path };
 }
 
 export interface Vars {
@@ -124,7 +139,7 @@ export interface Vars {
 export function expand(template: string, vars: Vars): string {
   return template.replace(/\{(\w+)\}/g, (m, k: string) => {
     const v = vars[k];
-    if (v === undefined) throw new Error(`unknown placeholder ${m} in ${JSON.stringify(template)}`);
+    if (v === undefined) throw new InputError(`unknown placeholder ${m} in ${JSON.stringify(template)}`);
     return v;
   });
 }
@@ -196,14 +211,14 @@ export interface Side {
 // Every side in every mode: all sides in the first mode, then all in the next, so a round runs one
 // mode's sides together.
 export function sidesInModes(sides: Side[], modes: readonly ThreadMode[], use: "check" | "lsp"): Side[] {
-  if (!modes.length) throw new Error("--threads needs at least one mode");
+  if (!modes.length) throw new InputError("--threads needs at least one mode");
   return modes.flatMap((m) => sides.map((s) => withThreads(s, m, use)));
 }
 
 export function parseThreadModes(value: string): ThreadMode[] {
   if (value === "both") return [...THREAD_MODES];
   const modes = value.split(",").map((v) => v.trim());
-  for (const m of modes) if (!THREAD_MODES.includes(m as ThreadMode)) throw new Error(`--threads: want default, single or both (got ${JSON.stringify(m)})`);
+  for (const m of modes) if (!THREAD_MODES.includes(m as ThreadMode)) throw new InputError(`--threads: want default, single or both (got ${JSON.stringify(m)})`);
   return [...new Set(modes as ThreadMode[])];
 }
 
@@ -213,7 +228,7 @@ export function withThreads(side: Side, mode: ThreadMode, use: "check" | "lsp"):
   if (mode === "default") return side;
   const t = side.profile.singleThreaded?.[use];
   if (!t)
-    throw new Error(
+    throw new InputError(
       `profile ${side.profile.name} does not say how to run its ${use === "check" ? "check command" : "language server"} single-threaded (singleThreaded.${use}); use --threads default`,
     );
   return {
@@ -237,7 +252,7 @@ export interface BindOptions {
 export async function bindSide(spec: string, role: Role, opts: BindOptions = {}): Promise<Side> {
   const envPolicy = opts.env ?? DEFAULT_ENV_POLICY;
   const eq = spec.indexOf("=");
-  if (eq < 1) throw new Error(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
+  if (eq < 1) throw new InputError(`side ${JSON.stringify(spec)}: want <profile>=<binary> or <label>:<profile>=<binary>`);
   const left = spec.slice(0, eq);
   // "label:profile", except that a single letter before ":\" or ":/" is a Windows drive
   // ("C:\p\x.json"), not a label (so a one-letter label cannot precede an absolute path).
@@ -245,7 +260,7 @@ export async function bindSide(spec: string, role: Role, opts: BindOptions = {})
   const [label, profileName] = labelled ? [labelled[1], labelled[2]!] : [undefined, left];
   const { profile, path: profilePath } = loadProfile(profileName);
   const bin = resolve(spec.slice(eq + 1));
-  if (!existsSync(bin)) throw new Error(`side ${JSON.stringify(spec)}: no binary at ${bin}`);
+  if (!existsSync(bin)) throw new InputError(`side ${JSON.stringify(spec)}: no binary at ${bin}`);
   const binReal = realpathSync(bin);
   const vars: Vars = { bin: isAbsolute(bin) ? bin : resolve(bin), binDir: dirname(binReal) };
   const env = resolveEnv(profile, baseEnv(envPolicy), opts.extraEnv ?? {});
