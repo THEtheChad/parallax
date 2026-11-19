@@ -6,6 +6,7 @@ import type { Comparison, CompareRow } from "../commands/compareResults.ts";
 import { renderDecision } from "../timing/policy.ts";
 import { mib, ms, ratio } from "./common.ts";
 import { line, toCsv, toMarkdown, toText, type Block, type Report } from "./model.ts";
+import type { Paint } from "../style.ts";
 
 // Rounded down: a 99.17% interval is not a 99.2% one.
 const percent = (c: number): string => `${Math.floor(c * 1000 + 1e-9) / 10}%`;
@@ -105,12 +106,16 @@ export function comparisonReport(c: Comparison): Report {
   const order = ["worse", "better", "same", "unresolved", "too few rounds"] as const;
   const counts = order.filter((k) => c.counts[k]).map((k) => `${c.counts[k]} ${k}`);
   const skipped = c.rows.filter((r) => !r.call).length;
-  blocks.push({ kind: "verdict", text: `${counts.join(", ") || "nothing compared"}${skipped ? `; ${skipped} not compared` : ""}` });
+  blocks.push({
+    kind: "verdict",
+    text: `${counts.join(", ") || "nothing compared"}${skipped ? `; ${skipped} not compared` : ""}`,
+    tone: c.counts.worse ? "bad" : c.counts.unresolved || c.counts["too few rounds"] || skipped || !counts.length ? "warn" : "good",
+  });
   if (c.policy) blocks.push({ kind: "lines", lines: renderDecision(c.policy).split("\n").map((t) => line(t)) });
   return { title: `compare-results: ${p.name} (${c.kind})`, blocks };
 }
 
-export const renderComparison = (c: Comparison): string => toText(comparisonReport(c));
+export const renderComparison = (c: Comparison, paint?: Paint): string => toText(comparisonReport(c), paint);
 export const comparisonMarkdown = (c: Comparison): string => toMarkdown(comparisonReport(c));
 
 // One row per compared figure; raw numbers and the stored call.

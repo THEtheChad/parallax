@@ -5,6 +5,7 @@ import type { Calibration } from "../timing/calibration.ts";
 import { METRICS } from "../timing/lspSummary.ts";
 import { callText, type Measure } from "./common.ts";
 import { line, toCsv, toText, type Block, type Report } from "./model.ts";
+import type { Paint } from "../style.ts";
 
 const pct = (x: number): string => `${(x * 100).toFixed(x < 0.1 ? 2 : 1)}%`;
 
@@ -50,11 +51,11 @@ export function calibrationReport(c: Calibration, file: string | null): Report {
       ),
     );
   blocks.push({ kind: "lines", lines: notes });
-  blocks.push({ kind: "verdict", text: file ? `kept for later benches on this host setup: ${file}` : "not kept for later benches" });
+  blocks.push({ kind: "verdict", text: file ? `kept for later benches on this host setup: ${file}` : "not kept for later benches", tone: file ? "good" : "warn" });
   return { title: "parallax calibration", blocks };
 }
 
-export const renderCalibration = (c: Calibration, file: string | null): string => toText(calibrationReport(c, file));
+export const renderCalibration = (c: Calibration, file: string | null, paint?: Paint): string => toText(calibrationReport(c, file), paint);
 
 export function calibrationCsv(c: Calibration): string {
   return toCsv(

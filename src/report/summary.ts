@@ -3,6 +3,7 @@
 
 import { ATTENTION, VERDICTS, type Summary, type Verdict } from "../diff/compare.ts";
 import { line, toCsv, toText, type Block, type Line, type Report } from "./model.ts";
+import type { Paint } from "../style.ts";
 
 export function summaryReport(s: Summary, { attentionLimit = 30 } = {}): Report {
   const head: Line[] = [line(`${s.requests} requests; reference runs ${s.refRuns.join(", ")}; ${s.refUnstable} reference-unstable`)];
@@ -44,11 +45,11 @@ export function summaryReport(s: Summary, { attentionLimit = 30 } = {}): Report 
     if (attn.length > attentionLimit) items.push(line(`… ${attn.length - attentionLimit} more in summary.json`, 1));
     if (items.length) blocks.push({ kind: "lines", lines: items });
   }
-  blocks.push({ kind: "verdict", text: s.clean ? "CLEAN: no difference needs attention and every session ended cleanly" : "ATTENTION: see the differences above" });
+  blocks.push({ kind: "verdict", text: s.clean ? "CLEAN: no difference needs attention and every session ended cleanly" : "ATTENTION: see the differences above", tone: s.clean ? "good" : "bad" });
   return { title: "parallax lsp-diff", blocks };
 }
 
-export const renderSummary = (s: Summary, opts: { attentionLimit?: number } = {}): string => toText(summaryReport(s, opts));
+export const renderSummary = (s: Summary, opts: { attentionLimit?: number } = {}, paint?: Paint): string => toText(summaryReport(s, opts), paint);
 
 // One row per candidate, method and verdict with a count (verdicts with none are left out), plus a
 // "total" method row per verdict.

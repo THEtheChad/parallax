@@ -5,8 +5,9 @@
 import type { LspBenchSummary, MetricInfo } from "../timing/lspSummary.ts";
 import { METRICS } from "../timing/lspSummary.ts";
 import { SETTLED, type Interval } from "../timing/stats.ts";
-import { callText, intervalColumn, intervalFields, kibPerEdit, mib, ms, plural, ratio, roundsLines, timingCsv, type TimingCsvRow } from "./common.ts";
+import { verdictTone, callText, intervalColumn, intervalFields, kibPerEdit, mib, ms, plural, ratio, roundsLines, timingCsv, type TimingCsvRow } from "./common.ts";
 import { line, toText, type Block, type Report } from "./model.ts";
+import type { Paint } from "../style.ts";
 
 const formatter = (unit: MetricInfo["unit"]): ((v: number) => string) => (unit === "bytes" ? mib : unit === "bytes/edit" ? kibPerEdit : unit === "x" ? ratio : ms);
 
@@ -77,11 +78,11 @@ export function lspBenchReport(s: LspBenchSummary): Report {
     blocks.push({ kind: "heading", text: `${c.label} vs ${ref.label}: ${c.state}` });
     blocks.push({ kind: "table", header: ["metric", ref.label, c.label, ratios.header, "call"], rows });
   }
-  blocks.push({ kind: "verdict", text: lspBenchVerdict(s) });
+  blocks.push({ kind: "verdict", text: lspBenchVerdict(s), tone: verdictTone(lspBenchVerdict(s)) });
   return { title: "parallax lsp-bench", blocks };
 }
 
-export const renderLspBenchSummary = (s: LspBenchSummary): string => toText(lspBenchReport(s));
+export const renderLspBenchSummary = (s: LspBenchSummary, paint?: Paint): string => toText(lspBenchReport(s), paint);
 
 // One CSV, long format (README lists the kinds): `side` rows (each side's median per metric with its
 // interval) and `comparison` rows (per candidate and metric: both medians, the ratio interval, call

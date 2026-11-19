@@ -4,6 +4,11 @@
 import type { Call, Interval } from "../timing/stats.ts";
 import type { Resolution } from "../timing/summary.ts";
 import { line, toCsv, type Line } from "./model.ts";
+import type { Tone } from "../style.ts";
+
+// A timing verdict at a glance: not measured cleanly is a problem; measured with a caveat (unsettled
+// calls, outputs that differ) is a warning; measured is clean.
+export const verdictTone = (text: string): Tone => (text.startsWith("NOT ") ? "bad" : text === "MEASURED" ? "good" : "warn");
 
 // Under 1 ms two decimals: 0.26 ms and 0.33 ms must not both read 0.3 ms beside a call between them.
 export const ms = (v: number): string => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(v < 1 ? 2 : v < 10 ? 1 : 0)} ms`);
