@@ -99,9 +99,17 @@ gave a "95%" interval excluding 1.)
 | call | when |
 | --- | --- |
 | `faster`, `slower` | the whole interval is on one side of 1, and the median differs from 1 by at least 1% |
-| `same ±r` | the whole interval lies within 1 ± r, the resolution: `--resolution` (5%), widened to `--resolution-ms` (1 ms) over the reference's figure where that is larger, so a 0.3 ms request is "same" within 1 ms, not within 5% of 0.3 ms |
+| `same ±r` | the whole interval lies within 1 ± r, the resolution: `--resolution` (5%), widened to `--resolution-ms` (1 ms) over the reference's figure where that is larger, so a 0.3 ms request is "same" within 1 ms, not within 5% of 0.3 ms (the report then says `same (within 1 ms)`, not the ±300% it works out to) |
 | `unresolved` | none of these; more rounds would tell |
 | `too few rounds` | the interval cannot reach the confidence a call needs |
+
+Every metric is lower-is-better, and the stored call is `faster` or `slower` for all of them; the
+report words a CPU-time or memory metric's call `lower` or `higher` instead. The report's two
+percentages are different things: "calls at 95% confidence" is what this look required of an
+interval (see sequential rounds below), and "(96% interval)" in a column header is the coverage the
+intervals really have. Order statistics give coverage in discrete steps, so the interval used is the
+first step at or above what the call needs (96.9% at 6 rounds for 95%), or the whole range, below it,
+when there are too few rounds. Ratios are printed to three significant figures.
 
 **Sequential rounds.** A bench runs `--runs` (6) rounds and looks. If some comparison is unsettled
 (`unresolved` or `too few rounds`), it runs 3 more and looks again, up to `--max-runs` (15). Looking

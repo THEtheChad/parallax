@@ -1,0 +1,73 @@
+{
+ "normalization": {
+  "version": "parallax.normalize/1",
+  "rules": [
+   "root",
+   "keys"
+  ]
+ },
+ "requests": 13,
+ "refRuns": [
+  "ref.1",
+  "ref.2"
+ ],
+ "refEvidence": [],
+ "refUnstable": 0,
+ "refUnstableFromEvidence": 0,
+ "sessions": [
+  {
+   "run": "ref.1",
+   "side": "ref",
+   "role": "ref",
+   "outcome": "clean",
+   "answers": 13,
+   "shutdownClean": true,
+   "orderBreak": null
+  },
+  {
+   "run": "cand.1",
+   "side": "cand",
+   "role": "cand",
+   "outcome": "clean",
+   "answers": 13,
+   "shutdownClean": true,
+   "orderBreak": null
+  }
+ ],
+ "candidates": [
+  {
+   "label": "cand",
+   "totals": {
+    "match": 10,
+    "normalized": 2,
+    "differ": 1,
+    "ref-unstable": 0,
+    "cand-unstable": 0,
+    "only-ref": 0,
+    "only-cand": 0,
+    "not-reached": 0
+   },
+   "byMethod": {
+    "textDocument/hover": {
+     "match": 6,
+     "differ": 1
+    },
+    "textDocument/completion": {
+     "match": 4,
+     "normalized": 2
+    }
+   },
+   "refUnstableMatchingARefRun": 0,
+   "attention": [
+    {
+     "key": "k1",
+     "step": "hover a.ts:3:4",
+     "method": "textDocument/hover",
+     "verdict": "differ",
+     "detail": "contents: Array<T> | string"
+    }
+   ]
+  }
+ ],
+ "clean": false
+}

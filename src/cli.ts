@@ -11,16 +11,14 @@ import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "./command
 import { lspDiff } from "./commands/lspDiff.ts";
 import { publish, verifyResult } from "./commands/publish.ts";
 import { calibrate } from "./commands/calibrate.ts";
-import { renderCalibration } from "./report/calibration.ts";
 import { parseEnvMode, type EnvPolicy } from "./host/sealedEnv.ts";
 import { expandCpuList } from "./host/pinning.ts";
 import { suiteRun } from "./commands/suiteRun.ts";
 import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
 import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
-import { renderBenchSummary } from "./report/bench.ts";
-import { renderLspBenchSummary } from "./report/lspBench.ts";
 import { renderSummary } from "./report/summary.ts";
+import { formatBench, formatCalibration, formatLspBench, formatSummary, parseFormat, type Format } from "./report/render.ts";
 
 const USAGE = `usage:
   parallax lsp-diff --project <dir> --ref <profile>=<bin> --cand [<label>:]<profile>=<bin> [--cand ...] --out <bundle-dir>
@@ -68,6 +66,7 @@ const USAGE = `usage:
                                          bench every suite project (or those named) with the suite's settings
   parallax import-lspdiff --from <old-out-dir> --project <dir> --ref <profile>=<bin> --cand <profile>=<bin> --out <bundle-dir>
 
+Reports (bench, lsp-bench, calibrate, bench-summary, summary) take --format text|md|json|csv (default text).
 Profiles are names in profiles/ (tsc7, tsrs, tsc-rs-fork) or paths to profile JSON files.
 Exit status: 0 clean, 1 differences, unclean sessions or a bench not measured cleanly, 2 usage or harness error.`;
 
@@ -137,8 +136,12 @@ async function main(argv: string[]): Promise<number> {
     bundle.normalization = summary.normalization;
     writeJsonAtomic(join(dir, "bundle.json"), bundle);
   } else if (command === "summary") {
-    if (!rest[0]) throw new UsageError("summary needs a bundle directory");
-    summary = JSON.parse(readFileSync(join(resolve(rest[0]), "summary.json"), "utf8")) as Summary;
+    const { values: o, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { format: { type: "string" } } });
+    if (positionals.length !== 1) throw new UsageError("summary needs a bundle directory");
+    const format = formatOption(o);
+    summary = JSON.parse(readFileSync(join(resolve(positionals[0]!), "summary.json"), "utf8")) as Summary;
+    console.log(formatSummary(summary, format));
+    return summary.clean ? 0 : 1;
   } else {
     throw new UsageError(`unknown command ${JSON.stringify(command)}`);
   }
@@ -283,6 +286,14 @@ function envOption(o: Values): EnvPolicy | undefined {
   return env;
 }
 
+function formatOption(o: Values): Format {
+  try {
+    return parseFormat(typeof o.format === "string" ? o.format : undefined);
+  } catch (e) {
+    throw new UsageError((e as Error).message);
+  }
+}
+
 const gateOptions = (o: Values) => defined({ maxOutsideCores: num(o, "max-outside-cores"), maxCanaryDrift: num(o, "max-canary-drift") });
 
 async function resultsCommand(command: string, rest: string[]): Promise<number> {
@@ -352,10 +363,12 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         config: { type: "string" },
         "counter-runs": { type: "string" },
         "timeout-ms": { type: "string" },
+        format: { type: "string" },
         ...ROUND_OPTIONS,
       },
     });
     if (!o.project || !o.out || !o.ref || !o.cand?.length) throw new UsageError("bench needs --project, --out, --ref and --cand");
+    const format = formatOption(o);
     const r = await bench({
       project: o.project,
       out: o.out,
@@ -366,7 +379,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
       log,
     });
     log(`bundle ${r.dir}`);
-    console.log(renderBenchSummary(r.summary));
+    console.log(formatBench(r.summary, format));
     return r.summary.clean ? 0 : 1;
   }
   if (command === "lsp-bench") {
@@ -377,11 +390,13 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         out: { type: "string" },
         ref: { type: "string" },
         cand: { type: "string", multiple: true },
+        format: { type: "string" },
         ...LSP_SESSION_OPTIONS,
         ...ROUND_OPTIONS,
       },
     });
     if (!o.project || !o.out || !o.ref || !o.cand?.length) throw new UsageError("lsp-bench needs --project, --out, --ref and --cand");
+    const format = formatOption(o);
     const r = await lspBench({
       project: o.project,
       out: o.out,
@@ -392,7 +407,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
       log,
     });
     log(`bundle ${r.dir}`);
-    console.log(renderLspBenchSummary(r.summary));
+    console.log(formatLspBench(r.summary, format));
     return r.summary.clean ? 0 : 1;
   }
   if (command === "calibrate") {
@@ -404,6 +419,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
         out: { type: "string" },
         side: { type: "string" },
         "no-save": { type: "boolean" },
+        format: { type: "string" },
         config: { type: "string" },
         "counter-runs": { type: "string" },
         "timeout-ms": { type: "string" },
@@ -413,6 +429,7 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
     });
     if (o.kind !== "bench" && o.kind !== "lsp-bench") throw new UsageError("calibrate needs --kind bench or --kind lsp-bench");
     if (!o.project || !o.out || !o.side) throw new UsageError("calibrate needs --project, --out and --side");
+    const format = formatOption(o);
     if (o["max-runs"] !== undefined) throw new UsageError("calibrate runs a fixed number of rounds: use --runs, not --max-runs");
     // Options of the other kind would be ignored: refuse them rather than calibrate another workload.
     const foreign = (o.kind === "bench" ? Object.keys(LSP_SESSION_OPTIONS) : ["config", "counter-runs", "timeout-ms"]).filter((k) => (o as Values)[k] !== undefined);
@@ -429,27 +446,30 @@ async function benchCommand(command: string, rest: string[]): Promise<number> {
       log,
     });
     log(`bundle ${r.dir}`);
-    console.log(renderCalibration(r.calibration, r.file));
+    // The other formats carry the calibration alone; text and md say where it was kept.
+    if (r.file && (format === "json" || format === "csv")) log(`kept for later benches on this host setup: ${r.file}`);
+    console.log(formatCalibration(r.calibration, r.file, format));
     return r.file || o["no-save"] ? 0 : 1;
   }
   // bench-summary: either kind of timing bundle.
   const { values: o, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { "max-outside-cores": { type: "string" }, "max-canary-drift": { type: "string" } },
+    options: { "max-outside-cores": { type: "string" }, "max-canary-drift": { type: "string" }, format: { type: "string" } },
   });
   if (positionals.length !== 1) throw new UsageError("bench-summary needs one bundle directory");
+  const format = formatOption(o);
   const dir = resolve(positionals[0]!);
   const kind = (JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as { kind?: string }).kind;
   if (kind === "lsp-bench") {
     const bundle = readLspBenchBundle(dir);
     const summary = summarizeLspBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
-    console.log(renderLspBenchSummary(summary));
+    console.log(formatLspBench(summary, format));
     return summary.clean ? 0 : 1;
   }
   const bundle = readBenchBundle(dir);
   const summary = summarizeBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
-  console.log(renderBenchSummary(summary));
+  console.log(formatBench(summary, format));
   return summary.clean ? 0 : 1;
 }
 

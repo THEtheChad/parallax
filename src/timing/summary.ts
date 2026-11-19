@@ -161,6 +161,10 @@ export interface BenchSummary {
   settled: boolean;
   // Counted runs per side, where a counter backend worked (absent in older summaries).
   counters?: { backend: string; sides: CounterSummary[] } | null;
+  // The bundle's notes: what about the machine or the run could bias a figure (no calibration, on
+  // battery, low priority, a project on a slow share...). The report shows them as warnings. Absent
+  // in older summaries; recomputing from an older bundle takes them from its bundle.json.
+  notes?: string[];
   clean: boolean;
 }
 
@@ -215,6 +219,8 @@ export interface SummarizeInput {
   accounting: string;
   // The counter backend the bench used ("none": no counted runs).
   counters?: string;
+  // The bundle's notes (absent: none recorded in the summary).
+  notes?: string[];
 }
 
 const figure = (xs: number[]): CounterFigure | null => {
@@ -364,6 +370,7 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
             ),
           }
         : null,
+    ...(input.notes ? { notes: input.notes } : {}),
     clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable),
   };
 }

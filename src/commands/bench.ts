@@ -284,6 +284,8 @@ export function summarizeBenchRecords(bundle: BenchBundle, records: Records, gat
     gates,
     accounting: bundle.host.accounting,
     ...(bundle.host.counters ? { counters: bundle.host.counters } : {}),
+    // Copied, so the summary does not change when the bundle's notes grow later.
+    notes: [...(bundle.notes ?? [])],
   });
 }
 

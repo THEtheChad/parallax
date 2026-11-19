@@ -1,0 +1,229 @@
+{
+ "schema": "parallax.bench-summary/1",
+ "canaryBaselineMs": 18.4,
+ "rounds": {
+  "planned": 6,
+  "max": 15,
+  "attempts": 16,
+  "accepted": 15,
+  "rejected": 1,
+  "failed": 0
+ },
+ "minRounds": 3,
+ "confidence": 0.9833,
+ "resolution": {
+  "relative": 0.05,
+  "floorMs": 1
+ },
+ "gates": {
+  "maxOutsideCores": 1,
+  "maxCanaryDrift": 0.1
+ },
+ "rejections": {
+  "canary slower than the fastest canary": 1
+ },
+ "accounting": "gnu-time+proc",
+ "sides": [
+  {
+   "label": "ref",
+   "role": "ref",
+   "mode": "default",
+   "samples": 15,
+   "wallMs": {
+    "estimate": 336.4,
+    "low": 330.1,
+    "high": 342.8,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuMs": {
+    "estimate": 1920,
+    "low": 1730,
+    "high": 1990,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "maxRssBytes": 352583680,
+   "failures": 0,
+   "exitCodes": [
+    0
+   ],
+   "outputs": 1,
+   "outputStable": true,
+   "outputMatchesRef": null
+  },
+  {
+   "label": "fast",
+   "role": "cand",
+   "mode": "default",
+   "samples": 15,
+   "wallMs": {
+    "estimate": 118.97,
+    "low": 115.9,
+    "high": 119.8,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuMs": {
+    "estimate": 375,
+    "low": 370,
+    "high": 380,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "maxRssBytes": 213504000,
+   "failures": 0,
+   "exitCodes": [
+    2
+   ],
+   "outputs": 1,
+   "outputStable": true,
+   "outputMatchesRef": false
+  },
+  {
+   "label": "twin",
+   "role": "cand",
+   "mode": "default",
+   "samples": 15,
+   "wallMs": {
+    "estimate": 0.52,
+    "low": 0.5,
+    "high": 0.6,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuMs": null,
+   "maxRssBytes": null,
+   "failures": 0,
+   "exitCodes": [
+    0
+   ],
+   "outputs": 1,
+   "outputStable": true,
+   "outputMatchesRef": true
+  },
+  {
+   "label": "odd",
+   "role": "cand",
+   "mode": "default",
+   "samples": 15,
+   "wallMs": {
+    "estimate": 340,
+    "low": 320,
+    "high": 360,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuMs": {
+    "estimate": 1900,
+    "low": 1800,
+    "high": 2000,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "maxRssBytes": 352000000,
+   "failures": 0,
+   "exitCodes": [
+    0
+   ],
+   "outputs": 1,
+   "outputStable": true,
+   "outputMatchesRef": true
+  }
+ ],
+ "candidates": [
+  {
+   "label": "fast",
+   "ref": "ref",
+   "mode": "default",
+   "state": "measured",
+   "wallRatio": {
+    "estimate": 0.35243,
+    "low": 0.3381,
+    "high": 0.3622,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuRatio": {
+    "estimate": 0.1975,
+    "low": 0.19,
+    "high": 0.2,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "call": "faster",
+   "sameWithin": 0.05
+  },
+  {
+   "label": "twin",
+   "ref": "ref",
+   "mode": "default",
+   "state": "measured",
+   "wallRatio": {
+    "estimate": 1.0234,
+    "low": 0.98,
+    "high": 1.6,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuRatio": null,
+   "call": "same",
+   "sameWithin": 3.0
+  },
+  {
+   "label": "odd",
+   "ref": "ref",
+   "mode": "default",
+   "state": "measured",
+   "wallRatio": {
+    "estimate": 1.011,
+    "low": 0.97,
+    "high": 1.07,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "cpuRatio": {
+    "estimate": 0.99,
+    "low": 0.95,
+    "high": 1.04,
+    "confidence": 0.99,
+    "n": 6
+   },
+   "call": "unresolved",
+   "sameWithin": 0.05
+  }
+ ],
+ "speedups": [],
+ "settled": false,
+ "counters": {
+  "backend": "perf",
+  "sides": [
+   {
+    "label": "ref",
+    "runs": 3,
+    "instructions": {
+     "median": 2971000000.0,
+     "spread": 0.00012
+    },
+    "cycles": {
+     "median": 1435000000.0,
+     "spread": 0.008
+    },
+    "ipc": 2.07,
+    "taskClockMs": {
+     "median": 397,
+     "spread": 0.016
+    },
+    "pageFaults": {
+     "median": 48740,
+     "spread": 0.0011
+    }
+   }
+  ]
+ },
+ "notes": [
+  "this machine has no noise calibration: `parallax calibrate` measures the smallest difference it can resolve",
+  "running on battery: the OS may slow the CPU to save power"
+ ],
+ "clean": true
+}
