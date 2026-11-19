@@ -127,7 +127,7 @@ test("a round is rejected for a busy start, outside CPU, or a slow canary", () =
   assert.deepEqual(judgeRound({ ...ok, outsideCores: null }, 20, DEFAULT_GATES), [], "no accounting: the canary still guards");
 });
 
-function bench(rounds: { ref: number; cand: number; canary: number; outside?: number; crash?: boolean; output?: string }[]) {
+function bench(rounds: { ref: number; cand: number; canary: number; outside?: number; crash?: boolean; output?: string; exit?: number }[]) {
   const records: (SampleRecord | RoundRecord)[] = [];
   rounds.forEach((r, i) => {
     const s = (side: string, role: "ref" | "cand", wallMs: number, extra: Partial<SampleRecord> = {}): SampleRecord => ({
@@ -157,7 +157,13 @@ function bench(rounds: { ref: number; cand: number; canary: number; outside?: nu
       ...extra,
     });
     records.push(s("ref", "ref", r.ref));
-    records.push(s("cand", "cand", r.cand, { ...(r.crash ? { crashSignals: ["stderr: panic: x"] } : {}), ...(r.output ? { stdoutSha256: r.output } : {}) }));
+    records.push(
+      s("cand", "cand", r.cand, {
+        ...(r.crash ? { crashSignals: ["stderr: panic: x"] } : {}),
+        ...(r.output ? { stdoutSha256: r.output } : {}),
+        ...(r.exit !== undefined ? { exit: { code: r.exit, signal: null } } : {}),
+      }),
+    );
     records.push({ type: "round", round: i + 1, attempt: 1, order: ["ref", "cand"], idle: idle(), canaryBeforeMs: r.canary, canaryAfterMs: r.canary, window: win, outsideCores: r.outside ?? 0, rejected: [] });
   });
   return summarizeBench({ records, sides: [{ label: "ref", role: "ref" }, { label: "cand", role: "cand" }], plannedRounds: rounds.length, minRounds: 3, gates: DEFAULT_GATES, accounting: "gnu-time" });
@@ -216,6 +222,28 @@ test("a crash fails the candidate; another output is reported, not hidden", () =
     { ref: 100, cand: 50, canary: 20 },
   ]);
   assert.equal(unstable.sides[1]!.outputStable, false);
+  assert.equal(unstable.clean, false);
+});
+
+test("the exit code is compared apart from the output: the same diagnostics with another exit code", () => {
+  // A port that prints the reference's errors but exits 1 where the reference exits 2.
+  const s = bench(Array.from({ length: 3 }, () => ({ ref: 100, cand: 50, canary: 20, exit: 1 })));
+  const [ref, cand] = s.sides;
+  assert.equal(ref!.exitMatchesRef, null);
+  assert.equal(cand!.outputMatchesRef, true, "what it printed is the reference's");
+  assert.equal(cand!.exitMatchesRef, false);
+  assert.deepEqual(cand!.exitCodes, [1]);
+  assert.equal(s.clean, true, "measured cleanly: the same work");
+  assert.equal(bench(Array.from({ length: 3 }, () => ({ ref: 100, cand: 50, canary: 20 }))).sides[1]!.exitMatchesRef, true);
+  // An exit code that changes between runs is unstable, as an output that changes is.
+  const unstable = bench([
+    { ref: 100, cand: 50, canary: 20, exit: 1 },
+    { ref: 100, cand: 50, canary: 20 },
+    { ref: 100, cand: 50, canary: 20 },
+  ]);
+  assert.equal(unstable.sides[1]!.outputStable, true);
+  assert.deepEqual(unstable.sides[1]!.exitCodes, [1, 2]);
+  assert.equal(unstable.sides[1]!.exitMatchesRef, false);
   assert.equal(unstable.clean, false);
 });
 

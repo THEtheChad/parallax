@@ -120,11 +120,17 @@ export interface SideSummary {
   cpuMs: Interval | null;
   maxRssBytes: number | null;
   failures: number;
-  // Distinct exit codes and outputs over every run of this side, warm-ups included.
+  // Distinct exit codes and outputs (what the side printed) over every run of this side, warm-ups
+  // included. The two are compared with the reference's apart: a port that prints the reference's
+  // diagnostics but exits 2 where it exits 1 did the same work, with an exit status scripts would
+  // misread. More than one exit code is unstable, as more than one output is.
   exitCodes: (number | null)[];
   outputs: number;
   outputStable: boolean;
   outputMatchesRef: boolean | null;
+  // null for the reference every side is compared with; absent in summaries from before the split,
+  // when outputMatchesRef compared the exit code too.
+  exitMatchesRef?: boolean | null;
 }
 
 export interface CandidateSummary {
@@ -299,7 +305,11 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
   // Every side's output is compared with the default-mode reference's: a single-threaded run must
   // give the same output too.
   const canonical = refFor(input.sides, { mode: "default" });
-  const refOutputs = new Set(samples.filter((s) => s.side === canonical.label).map((s) => `${s.exit.code}:${s.stdoutSha256}`));
+  const refSamples = samples.filter((s) => s.side === canonical.label);
+  const refOutputs = new Set(refSamples.map((s) => s.stdoutSha256));
+  const refExits = new Set(refSamples.map((s) => s.exit.code));
+  // Matches when both gave one value over all their runs, and the same one.
+  const matches = <T>(mine: Set<T>, ref: Set<T>): boolean => mine.size === 1 && ref.size === 1 && [...mine][0] === [...ref][0];
 
   const sides: SideSummary[] = input.sides.map((info) => {
     const { label, role } = info;
@@ -307,7 +317,8 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
     const mine = accepted.map((ss) => ss.find((s) => s.side === label)!);
     const cpu = mine.map((s) => s.cpuMs).filter((x): x is number => x !== null);
     const rss = mine.map((s) => s.maxRssBytes).filter((x): x is number => x !== null);
-    const outputs = new Set(all.map((s) => `${s.exit.code}:${s.stdoutSha256}`));
+    const outputs = new Set(all.map((s) => s.stdoutSha256));
+    const exits = new Set(all.map((s) => s.exit.code));
     return {
       label,
       role,
@@ -317,10 +328,11 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
       cpuMs: cpu.length === mine.length ? interval(cpu) : null,
       maxRssBytes: rss.length ? median(rss) : null,
       failures: all.filter(failed).length,
-      exitCodes: [...new Set(all.map((s) => s.exit.code))],
+      exitCodes: [...exits],
       outputs: outputs.size,
       outputStable: outputs.size <= 1,
-      outputMatchesRef: label === canonical.label ? null : outputs.size === 1 && refOutputs.size === 1 ? [...outputs][0] === [...refOutputs][0] : false,
+      outputMatchesRef: label === canonical.label ? null : matches(outputs, refOutputs),
+      exitMatchesRef: label === canonical.label ? null : matches(exits, refExits),
     };
   });
 
@@ -371,6 +383,6 @@ export function summarizeBench(input: SummarizeInput): BenchSummary {
           }
         : null,
     ...(input.notes ? { notes: input.notes } : {}),
-    clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable),
+    clean: candidates.every((c) => c.state === "measured") && sides.every((s) => s.outputStable && s.exitCodes.length <= 1),
   };
 }

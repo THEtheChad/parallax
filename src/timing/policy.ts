@@ -138,11 +138,18 @@ export function evaluateBenchPolicy(s: BenchSummary, policy: Policy): PolicyDeci
   const failures: PolicyFailure[] = [];
   for (const c of s.candidates)
     failures.push(...judge(policy, "slower", { candidate: c.label, metric: null, metricLabel: "wall", call: c.call, ratio: c.wallRatio, state: c.state }, "slower"));
-  if (policy.conditions.includes("output"))
+  if (policy.conditions.includes("output")) {
+    // The exit code counts as output here, though it is compared on its own: scripts and CI read it.
+    const ref = s.sides.find((x) => x.role === "ref" && x.exitMatchesRef === null);
+    const codes = (x: { exitCodes: (number | null)[] }): string => x.exitCodes.map((c) => (c === null ? "none" : String(c))).join(", ");
     for (const x of s.sides) {
-      if (!x.outputStable) failures.push({ condition: "output", candidate: x.label, metric: null, reason: `output UNSTABLE: ${x.outputs} different outputs over its runs` });
-      else if (x.outputMatchesRef === false) failures.push({ condition: "output", candidate: x.label, metric: null, reason: "output DIFFERENT from the reference's" });
+      const at = { condition: "output" as const, candidate: x.label, metric: null };
+      if (!x.outputStable) failures.push({ ...at, reason: `output UNSTABLE: ${x.outputs} different outputs over its runs` });
+      else if (x.outputMatchesRef === false) failures.push({ ...at, reason: "output DIFFERENT from the reference's" });
+      if (x.exitCodes.length > 1) failures.push({ ...at, reason: `exit code UNSTABLE: ${codes(x)} over its runs` });
+      else if (x.exitMatchesRef === false) failures.push({ ...at, reason: `exit code ${codes(x)}${ref ? `, the reference's ${codes(ref)}` : ", not the reference's"}` });
     }
+  }
   return decision(policy, failures);
 }
 

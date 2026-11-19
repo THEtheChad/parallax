@@ -129,12 +129,13 @@ setup warn when `--resolution` is below it.
 
 The output starts with any warnings about the run (no noise calibration, on battery, a lowered
 priority...; kept in the bundle's notes), then a table of sides (wall time, CPU, peak memory in MiB,
-exit code, whether the output matches the reference), a table of candidates (ratio, interval, call:
+the exit code, with `≠1` where it is not the reference's 1, and whether the printed output matches the
+reference's; the two are compared apart), a table of candidates (ratio, interval, call:
 `faster`, `slower`, `same ±r`, `same (within 1 ms)` where the millisecond floor decided it,
 `unresolved` or `too few rounds`), each implementation's parallel speedup, and the counters. The
 last line is the verdict: `MEASURED`, with what it does not cover (calls that could still change
 with more rounds; candidates whose output differs from the reference, so their times are of other
-work), or `NOT MEASURED CLEANLY`. `lsp-bench` calls a CPU or memory metric `lower` or `higher`, a
+work; candidates whose exit code alone differs, which did the same work), or `NOT MEASURED CLEANLY`. `lsp-bench` calls a CPU or memory metric `lower` or `higher`, a
 time `faster` or `slower`.
 
 **[docs/measurement.md](docs/measurement.md) is the method**: what disturbs a measurement and how
@@ -196,7 +197,7 @@ optional for readers of older bundles). Each summary names its kind in `schema`:
 | `candidates` | per candidate: `ref`, `mode`, `state` (`measured`, `noisy`, `failed`), ratio intervals and calls (`sameWithin`: the half-width of "same") |
 | `settled` | every call is one more rounds would not change |
 | `notes` | the run's warnings, as the report shows them |
-| `clean` | every candidate measured (bench: and every output stable): the exit status |
+| `clean` | every candidate measured (bench: and every output and exit code stable): the exit status |
 
 A bench adds `accounting`, `speedups` and `counters`; an lsp-bench adds `usage`, `memory` and
 `harnessLagP95Ms`, and its `sides[].metrics` and `candidates[].metrics` are keyed by metric
@@ -274,7 +275,8 @@ and csv.
 `bench`, `lsp-bench` and `bench-summary` take `--fail-on <conditions>`, a policy evaluated after
 measuring and kept apart from whether the measurement was clean: `slower` (any `slower` call; for
 lsp-bench any compared metric, or those in `--fail-metrics <key,...>`), `output` (bench: an output
-DIFFERENT from the reference's or UNSTABLE), `unresolved` (an unsettled call or a noisy candidate).
+or exit code DIFFERENT from the reference's or UNSTABLE), `unresolved` (an unsettled call or a noisy
+candidate).
 `--fail-threshold 1.10` fails `slower` only when the whole interval is above 1.10, judged on the
 look that settled the call (a bench stops as soon as every call is settled, so a `slower` call whose
 interval still reaches below 1.10 passes: the threshold fails only what is surely over it). `compare-results`

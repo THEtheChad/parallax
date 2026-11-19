@@ -80,9 +80,40 @@ test("bench verdict: plain MEASURED when settled and every output matches; uncle
   };
   assert.equal(benchVerdict(settled), "MEASURED");
   assert.equal(benchVerdict({ ...bench, clean: false }), "NOT MEASURED CLEANLY: see the states above");
+  // The fixture predates exitMatchesRef: its exit codes are shown bare, with no ≠.
+  assert.doesNotMatch(formatBench(bench, "text"), /≠/);
   // An older summary without notes renders without a warnings block.
   const { notes: _, ...old } = bench;
   assert.doesNotMatch(formatBench(old as BenchSummary, "text"), /warnings:/);
+});
+
+test("bench exit column: the code itself, ≠ the reference's where it differs; its own note in the verdict", () => {
+  // As the Rust ports on umami: the reference's diagnostics, exit 2 where tsc 7 exits 1.
+  const s: BenchSummary = {
+    ...bench,
+    settled: true,
+    sides: bench.sides.map((x) =>
+      x.role === "ref"
+        ? { ...x, exitCodes: [1], exitMatchesRef: null }
+        : x.label === "fast"
+          ? { ...x, exitCodes: [2], outputMatchesRef: true, exitMatchesRef: false }
+          : x.label === "odd"
+            ? { ...x, exitCodes: [1, 2], outputMatchesRef: true, exitMatchesRef: false }
+            : { ...x, exitCodes: [1], outputMatchesRef: true, exitMatchesRef: true },
+    ),
+  };
+  const out = formatBench(s, "text");
+  const row = (label: string): string => lines(out).find((l) => l.startsWith(`${label} `))!;
+  assert.match(row("ref"), / 1 +ref$/);
+  assert.match(row("fast"), / 2 ≠1 +same$/);
+  assert.match(row("twin"), / 1 +same$/);
+  assert.match(row("odd"), / 1,2 UNSTABLE +same$/);
+  // The verdict of a clean run (an unstable exit code would make it unclean): odd exits 1 every time.
+  const clean = { ...s, sides: s.sides.map((x) => (x.label === "odd" ? { ...x, exitCodes: [1], exitMatchesRef: true } : x)) };
+  assert.equal(benchVerdict(clean), "MEASURED: exit code differs from the reference's for fast (see the exit column)");
+  // With an output that differs too, both notes.
+  const both = { ...clean, sides: clean.sides.map((x) => (x.label === "twin" ? { ...x, outputMatchesRef: false } : x)) };
+  assert.match(benchVerdict(both), /: timing only; output differs from the reference for twin \(.*\); exit code differs from the reference's for fast \(see the exit column\)$/);
 });
 
 test("lsp-bench text: CPU and memory are lower/higher, labels are finished, side counts have a key", () => {

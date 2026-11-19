@@ -7,19 +7,41 @@ import { verdictTone, callText, intervalColumn, intervalFields, mib, ms, plural,
 import { line, toText, type Block, type Report } from "./model.ts";
 import type { Paint } from "../style.ts";
 
-const outputText = (x: BenchSummary["sides"][number]): string =>
+type SideRow = BenchSummary["sides"][number];
+
+const outputText = (x: SideRow): string =>
   !x.outputStable ? `UNSTABLE (${x.outputs})` : x.outputMatchesRef === null ? "ref" : x.outputMatchesRef ? "same" : "DIFFERENT";
+
+const codes = (x: SideRow): string => x.exitCodes.map((c) => (c === null ? "-" : String(c))).join(",");
+
+// The side every exit code is compared with (exitMatchesRef null); undefined in summaries from before
+// exit codes were compared on their own.
+const exitRef = (s: BenchSummary): SideRow | undefined => s.sides.find((x) => x.role === "ref" && x.exitMatchesRef === null);
+
+// The exit codes a side gave, and "≠1" where they are not the reference's 1.
+function exitText(x: SideRow, ref: SideRow | undefined): string {
+  if (x.exitCodes.length > 1) return `${codes(x)} UNSTABLE`;
+  return x.exitMatchesRef === false && ref ? `${codes(x)} ≠${codes(ref)}` : codes(x);
+}
+
+// Sides whose exit codes are not the reference's (an unstable one included: it is not one code).
+const exitDiffers =(s: BenchSummary): string[] => s.sides.filter((x) => x.exitMatchesRef === false).map((x) => x.label);
 
 // The closing line. `clean` decides it, as it decides the exit status; when clean, it also says what
 // the header and tables already show and a bare "MEASURED" would hide: calls that could still change,
-// and candidates whose output is not the reference's (their times are of different work).
+// candidates whose output is not the reference's (their times are of different work), and those whose
+// exit code is not (the same work, an exit status that differs).
 export function benchVerdict(s: BenchSummary): string {
   if (!s.clean) return "NOT MEASURED CLEANLY: see the states above";
   const unsettled = s.settled === false ? s.candidates.filter((c) => c.state !== "failed" && !(c.call !== null && SETTLED.includes(c.call))).length : 0;
   const differs = s.sides.filter((x) => x.outputMatchesRef === false).map((x) => x.label);
+  const exits = exitDiffers(s);
   let out = "MEASURED";
   if (unsettled) out += ` (not settled: ${plural(unsettled, "call")} could change with more rounds)`;
-  if (differs.length) out += `: timing only; output differs from the reference for ${differs.join(", ")} (see the output column; parity is lsp-diff's job)`;
+  const notes: string[] = [];
+  if (differs.length) notes.push(`timing only; output differs from the reference for ${differs.join(", ")} (see the output column; parity is lsp-diff's job)`);
+  if (exits.length) notes.push(`exit code differs from the reference's for ${exits.join(", ")} (see the exit column)`);
+  if (notes.length) out += `: ${notes.join("; ")}`;
   return out;
 }
 
@@ -31,6 +53,7 @@ export function benchReport(s: BenchSummary): Report {
     lines: [...roundsLines(s), line(`canary ${s.canaryBaselineMs === null ? "-" : `${s.canaryBaselineMs.toFixed(1)} ms`}; accounting ${s.accounting}`)],
   });
   const wall = intervalColumn("wall median", s.sides.map((x) => x.wallMs), ms);
+  const ref = exitRef(s);
   blocks.push({
     kind: "table",
     header: ["side", "n", wall.header, "CPU", "peak RSS", "exit", "output"],
@@ -40,7 +63,7 @@ export function benchReport(s: BenchSummary): Report {
       wall.cells[i]!,
       x.cpuMs ? ms(x.cpuMs.estimate) : "-",
       x.maxRssBytes === null ? "-" : mib(x.maxRssBytes),
-      x.exitCodes.join(","),
+      exitText(x, ref),
       outputText(x),
     ]),
   });

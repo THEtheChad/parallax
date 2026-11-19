@@ -69,6 +69,9 @@ language server separately: tsc 7 and the tsc-rs fork take `--singleThreaded` on
 `GOMAXPROCS=1` for the server (the fork honours `GOMAXPROCS` as Go does); tsrs takes
 `--singleThreaded` and `RAYON_NUM_THREADS=1`. Each candidate is compared with the reference in the
 same mode, and every output, single-threaded ones included, must match the default-mode reference's.
+The exit code is compared apart from what was printed: a port that prints the reference's diagnostics
+but exits 2 where it exits 1 did the same work, and is reported as an exit code that differs, not as
+different output.
 `bench` also reports each implementation's parallel speedup: single-threaded wall time over default
 wall time, paired within each round.
 
@@ -142,7 +145,7 @@ measurement was clean:
 | condition | fails when |
 | --- | --- |
 | `slower` | a candidate's call is `slower` (bench: wall time; lsp-bench: any compared metric, or only those named by `--fail-metrics <key,...>`) |
-| `output` | bench only: a side's output is DIFFERENT from the reference's, or UNSTABLE over its runs |
+| `output` | bench only: a side's output or exit code is DIFFERENT from the reference's, or UNSTABLE over its runs (each reported with its own reason) |
 | `unresolved` | a call is `unresolved` or `too few rounds`, or a candidate is `noisy`: the bench is not settled |
 
 `--fail-threshold R` (at least 1) narrows `slower` to calls whose whole interval is above R: with 1.10,

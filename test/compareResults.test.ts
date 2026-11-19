@@ -273,12 +273,12 @@ test("compare-results: a real-shaped result (bench, then publish) against itself
 });
 
 // A bench summary from rounds of (reference, candidate) wall times, as timing.test.ts builds them.
-function benchSummary(rounds: { ref: number; cand: number; output?: string }[]) {
+function benchSummary(rounds: { ref: number; cand: number; output?: string; exit?: number }[]) {
   const records: (SampleRecord | RoundRecord)[] = [];
   const win = { wallMs: 100, machineCpuMs: 100, machineCores: 1, selfCpuMs: 0, pressure: null };
   rounds.forEach((r, i) => {
     for (const [side, role, wallMs] of [["ref", "ref", r.ref], ["cand", "cand", r.cand]] as const)
-      records.push({ type: "sample", side, role, round: i + 1, attempt: 1, warmup: false, startedAt: "", wallMs, drainMs: wallMs, exit: { code: 0, signal: null }, timedOut: false, crashSignals: [], stdoutSha256: side === "cand" && r.output ? r.output : "same", stderrSha256: "", outputLines: 0, cpuMs: null, userMs: null, sysMs: null, adoptedCpuMs: null, adopted: null, maxRssBytes: null, window: win, outsideCores: 0 });
+      records.push({ type: "sample", side, role, round: i + 1, attempt: 1, warmup: false, startedAt: "", wallMs, drainMs: wallMs, exit: { code: side === "cand" ? (r.exit ?? 0) : 0, signal: null }, timedOut: false, crashSignals: [], stdoutSha256: side === "cand" && r.output ? r.output : "same", stderrSha256: "", outputLines: 0, cpuMs: null, userMs: null, sysMs: null, adoptedCpuMs: null, adopted: null, maxRssBytes: null, window: win, outsideCores: 0 });
     records.push({ type: "round", round: i + 1, attempt: 1, order: ["ref", "cand"], idle: { timedOut: false } as RoundRecord["idle"], canaryBeforeMs: 20, canaryAfterMs: 20, window: win, outsideCores: 0, rejected: [] });
   });
   return summarizeBench({ records, sides: [{ label: "ref", role: "ref" }, { label: "cand", role: "cand" }], plannedRounds: rounds.length, minRounds: 3, gates: DEFAULT_GATES, accounting: "none" });
@@ -298,6 +298,11 @@ test("--fail-on for a bench: slower (with a threshold), output, unresolved; the 
   assert.equal(different.clean, true, "a different output is measured cleanly");
   const d = evaluateBenchPolicy(different, failOn("output,slower"));
   assert.deepEqual(d.failures.map((f) => [f.condition, f.candidate]), [["output", "cand"]]);
+  // The same output with another exit code: still an `output` failure, with its own reason.
+  const exitOnly = evaluateBenchPolicy(benchSummary(Array.from({ length: 6 }, () => ({ ref: 100, cand: 50, exit: 2 }))), failOn("output"));
+  assert.deepEqual(exitOnly.failures.map((f) => [f.condition, f.candidate, f.reason]), [["output", "cand", "exit code 2, the reference's 0"]]);
+  const flaky = evaluateBenchPolicy(benchSummary(Array.from({ length: 6 }, (_, i) => ({ ref: 100, cand: 50, exit: i % 2 }))), failOn("output"));
+  assert.deepEqual(flaky.failures.map((f) => f.reason), ["exit code UNSTABLE: 0, 1 over its runs"]);
 
   const noisy = benchSummary([{ ref: 100, cand: 50 }, { ref: 100, cand: 50 }]);
   assert.equal(noisy.clean, false);
