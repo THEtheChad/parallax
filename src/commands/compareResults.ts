@@ -364,6 +364,14 @@ export function compareRuns(a: Run, b: Run, opts: CompareOptions = {}): Comparis
       else pending.push({ ...row, state: "compared", values: { old: va, new: vb } });
     }
   }
+  // A named metric neither run measured is a mistake in the command (a phase skipped, a key from a newer
+  // harness), not "nothing to report".
+  // (When no candidate was measured in both runs there are no metric rows to look at.)
+  if (opts.metrics && pairs.some(([x, y]) => x.state === "measured" && y.state === "measured")) {
+    const present = new Set(pending.filter((r) => r.state === "compared" || r.state.startsWith("not measured")).map((r) => r.metric as string));
+    const absent = opts.metrics.filter((k) => !present.has(k));
+    if (absent.length) throw new CompareError(`--metrics: ${absent.join(", ")} not measured in either run`);
+  }
   const comparisons = pending.filter((r) => r.state === "compared").length;
   const familyWise = opts.familyWise === true;
   const perComparison = familyWise && comparisons > 1 ? 1 - (1 - confidence) / comparisons : confidence;

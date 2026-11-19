@@ -38,6 +38,7 @@ stops at the first look where every call is settled, so it may end at the next l
 | 0 | clean: no differences, every session clean, every bench measured cleanly |
 | 1 | a finding: differences, an unclean session, a bench not measured cleanly (each command's `--help` says what it means there) |
 | 2 | a usage error (the message and the command's synopsis) or a harness error (one line; `PARALLAX_DEBUG=1` adds the stack) |
+| 3 | measured cleanly, but the `--fail-on` policy failed (`bench`, `lsp-bench`, `bench-summary`, `compare-results`; see below) |
 
 ## Answer diff
 
@@ -132,7 +133,10 @@ sample and round, rejected ones included; other gates can be tried after the fac
 
 ### Report formats
 
-`bench`, `lsp-bench`, `calibrate`, `bench-summary` and `summary` take `--format`:
+Every command that prints a report takes `--format`: `bench`, `lsp-bench`, `calibrate`,
+`bench-summary`, `compare-results`, and for answer diffs `lsp-diff`, `compare`, `summary` and
+`import-lspdiff`. (`compare-results`' CSV has its own columns, one row per comparison: see
+[Comparing runs, and a CI policy](#comparing-runs-and-a-ci-policy).)
 
 | format | stdout |
 | --- | --- |
@@ -247,7 +251,12 @@ a gate on one should do (over 100 rows at 95% each, a few come out worse by chan
 `--resolution-ms` are as for bench. Runs of different projects are refused unless
 `--allow-project-change`; another machine, harness commit, workload setting or binary is named in a
 warning (a changed candidate binary is usually the point). `--format json` prints the comparison as one
-object.
+object; `--format csv` one row per comparison (`candidate, mode, ref_old, ref_new, metric, unit, state,
+rounds_old, rounds_new, ratio_old, ratio_new, shift, shift_low, shift_high, coverage, call, same_within,
+ref_changed`, then each run's reference and candidate medians and, from one machine, the candidate's own
+new/old), with the `--fail-on` decision on stderr. The text and Markdown tables show the called figures;
+a CLI bench's reference and candidate times follow in a table of their own, an lsp-bench's are in json
+and csv.
 
 `bench`, `lsp-bench` and `bench-summary` take `--fail-on <conditions>`, a policy evaluated after
 measuring and kept apart from whether the measurement was clean: `slower` (any `slower` call; for

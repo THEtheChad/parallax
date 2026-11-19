@@ -247,7 +247,11 @@ const COMMANDS: Command[] = [
     run: async ({ values: o, positionals }) => {
       const format = formatOption(o);
       const dir = oneBundle("summary", positionals, "summary.json");
-      return printSummary(JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")) as Summary, format);
+      const summary = JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")) as Summary & { schema?: string };
+      // summary and bench-summary are the easiest pair to mix up: name the right one.
+      if (summary.schema === "parallax.bench-summary/1" || summary.schema === "parallax.lsp-bench-summary/1")
+        throw new UsageError(`${dir} is a ${summary.schema === "parallax.bench-summary/1" ? "bench" : "lsp-bench"} bundle: its report is \`parallax bench-summary ${positionals[0]}\``);
+      return printSummary(summary, format);
     },
   },
   {
@@ -374,7 +378,7 @@ const COMMANDS: Command[] = [
   {
     name: "bench-summary",
     summary: "recompute a bench or lsp-bench bundle's summary, optionally with other gates",
-    usage: "bench-summary <bundle-dir> [--max-outside-cores <cores>] [--max-canary-drift <fraction>] [--format text|md|json|csv]",
+    usage: "bench-summary <bundle-dir> [--max-outside-cores <cores>] [--max-canary-drift <fraction>] [--fail-on <list>] [--format text|md|json|csv]",
     about: "Recomputes summary.json of a bench or lsp-bench bundle from samples.jsonl, which keeps every sample and round, rejected ones included, and prints the report again. Other gates can be tried after the fact.",
     positionals: true,
     options: [{ title: "gates", opts: MACHINE.opts.filter((x) => x.name.startsWith("max-") && x.name !== "max-busy-cores").map((x) => ({ ...x, default: "the bundle's" })) }, POLICY("both"), REPORT],
@@ -384,6 +388,7 @@ const COMMANDS: Command[] = [
       const format = formatOption(o);
       const dir = oneBundle("bench-summary", positionals, "bundle.json");
       const kind = (JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as { kind?: string }).kind;
+      if (kind === "lsp-answer-diff") throw new UsageError(`${dir} is an lsp-diff bundle: its report is \`parallax summary ${positionals[0]}\` (or \`parallax compare\` to recompute it)`);
       const policy = policyOption(o, kind === "lsp-bench" ? "lsp-bench" : "cli-bench");
       if (kind === "lsp-bench") {
         const bundle = readLspBenchBundle(dir);

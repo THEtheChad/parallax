@@ -54,9 +54,12 @@ test("bench text: warnings first, units, legend, and a verdict that says what is
   const l = lines(out);
   assert.equal(l[0], "warnings:");
   assert.match(l[1]!, /^ {2}- this machine has no noise calibration/);
-  assert.match(out, /a comparison needs at least 3 accepted \(--min-runs\)/);
+  // Prose wraps at 100 columns, continuing further in; tables never wrap.
+  assert.ok(l.find((x) => x.startsWith("rounds:"))!.length <= 100, "prose wraps at 100");
+  const prose = out.replace(/\n +/g, " ");
+  assert.match(prose, /a comparison needs at least 3 accepted \(--min-runs\)/);
   assert.doesNotMatch(out, /; need 3/);
-  assert.match(out, /the % in an interval's header is the coverage it really has/);
+  assert.match(prose, /the % in an interval's header is the coverage it really has/);
   assert.match(out, /336 MiB/);
   assert.doesNotMatch(out, / MB\b/);
   assert.match(out, /0\.352x \(0\.338x\.\.0\.362x\)/);
@@ -106,7 +109,8 @@ test("markdown has the same content as text, as GFM tables", () => {
   assert.match(md, /^> - the harness sent keys up to 40 ms late/m);
   assert.match(md, /^### cand vs ref: measured$/m);
   assert.match(md, /^\| metric \| ref \| cand \| ratio \(99% interval\) \| call \|$/m);
-  assert.match(md, /^\| :--- \| ---: \| ---: \| ---: \| ---: \|$/m);
+  // Figures right-aligned, words (the call) left-aligned.
+  assert.match(md, /^\| :--- \| ---: \| ---: \| ---: \| :--- \|$/m);
   assert.match(md, /^\| session: memory \| 1108 MiB \| 692 MiB \| 0\.625x \(0\.594x\.\.0\.657x\) \| lower \|$/m);
   assert.equal(lines(md).at(-1), "**MEASURED (not settled: 1 call could change with more rounds)**");
   const bmd = formatBench(bench, "md");

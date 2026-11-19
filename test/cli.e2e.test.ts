@@ -143,3 +143,17 @@ test("a report bigger than a pipe's buffer reaches a slow reader whole", { timeo
   const out = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { pad: string };
   assert.equal(out.pad.length, pad.length);
 });
+
+test("summary and bench-summary name each other when given the other's bundle", () => {
+  const bench = mkdtempSync(join(tmpdir(), "parallax-cli-kind-"));
+  writeFileSync(join(bench, "summary.json"), JSON.stringify({ schema: "parallax.bench-summary/1", clean: true }));
+  const wrongSummary = run(["summary", bench]);
+  assert.equal(wrongSummary.status, 2);
+  assert.match(wrongSummary.stderr, /is a bench bundle: its report is `parallax bench-summary /);
+  assert.doesNotMatch(wrongSummary.stderr, STACK);
+  const diff = mkdtempSync(join(tmpdir(), "parallax-cli-kind-"));
+  writeFileSync(join(diff, "bundle.json"), JSON.stringify({ schema: "parallax.bundle/1", kind: "lsp-answer-diff" }));
+  const wrongBench = run(["bench-summary", diff]);
+  assert.equal(wrongBench.status, 2);
+  assert.match(wrongBench.stderr, /is an lsp-diff bundle: its report is `parallax summary /);
+});

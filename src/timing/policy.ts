@@ -162,6 +162,13 @@ export function evaluateLspPolicy(s: LspBenchSummary, policy: Policy): PolicyDec
       failures.push(...judge(policy, "slower", { candidate: c.label, metric: key, metricLabel: label, call: m.call, ratio: m.ratio, state: c.state }, "slower"));
     }
   }
+  // A gate on a metric this run did not measure (a phase skipped, a bundle from before the metric
+  // existed) would pass forever without judging anything: that fails.
+  const measured = s.candidates.filter((c) => c.state === "measured");
+  if (policy.metrics && measured.length)
+    for (const key of policy.metrics)
+      if (!measured.some((c) => c.metrics[key as keyof typeof c.metrics]?.ratio))
+        failures.push({ condition: policy.conditions[0]!, candidate: "*", metric: key, reason: `--fail-metrics ${key}: not measured in this run, so the gate cannot judge it` });
   return decision(policy, failures);
 }
 
@@ -187,6 +194,8 @@ export function evaluateComparePolicy(rows: readonly ComparedRow[], policy: Poli
     if (state === "skip") continue;
     failures.push(...judge(policy, "worse", { candidate: r.label, metric: r.metric, metricLabel: r.metricLabel, call: r.call, ratio: r.shift, state }, "worse"));
   }
+  // Nothing compared (every row a metric one run did not measure): a gate that judged nothing fails.
+  if (!rows.some((r) => r.state === "compared")) failures.push({ condition: policy.conditions[0]!, candidate: "*", metric: null, reason: "nothing was compared, so the gate judged nothing" });
   return decision(policy, failures);
 }
 

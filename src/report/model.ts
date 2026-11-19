@@ -32,14 +32,33 @@ export function textTable(header: string[], rows: string[][]): string {
   return [row(header), widths.map((w) => "-".repeat(w)).join("  "), ...rows.map(row)].join("\n");
 }
 
+// Text lines wrap at this width, on spaces, continuing two spaces further in: prose (the rounds line,
+// the confidence legend, warnings) stays readable in a terminal. Tables are never wrapped.
+export const TEXT_WIDTH = 100;
+
+export function wrap(text: string, indent: string, width = TEXT_WIDTH): string[] {
+  const out: string[] = [];
+  let cur = indent;
+  let lead = indent;
+  for (const word of text.split(" ")) {
+    if (cur.length > lead.length && cur.length + 1 + word.length > width) {
+      out.push(cur);
+      lead = `${indent}  `;
+      cur = lead + word;
+    } else cur = cur.length > lead.length ? `${cur} ${word}` : cur + word;
+  }
+  out.push(cur);
+  return out;
+}
+
 export function toText(r: Report): string {
   const out: string[] = [];
   r.blocks.forEach((b, i) => {
     // Blocks are separated by a blank line, except after a heading, which belongs to what follows.
     if (i > 0 && r.blocks[i - 1]!.kind !== "heading") out.push("");
     if (b.kind === "heading" || b.kind === "verdict") out.push(b.text);
-    else if (b.kind === "lines") for (const l of b.lines) out.push(`${"  ".repeat(l.indent ?? 0)}${l.text}`);
-    else if (b.kind === "warnings") out.push("warnings:", ...b.notes.map((n) => `  - ${n}`));
+    else if (b.kind === "lines") for (const l of b.lines) out.push(...wrap(l.text, "  ".repeat(l.indent ?? 0)));
+    else if (b.kind === "warnings") out.push("warnings:", ...b.notes.flatMap((n) => wrap(`- ${n}`, "  ")));
     else {
       if (b.caption) out.push(b.caption);
       out.push(textTable(b.header, b.rows));
@@ -51,9 +70,14 @@ export function toText(r: Report): string {
 // Characters Markdown would read as formatting, HTML or a table cell's end.
 export const escapeMd = (s: string): string => s.replace(/[\\`*_<>|[\]~]/g, (c) => `\\${c}`);
 
+// A column is right-aligned when every filled cell is a figure ("336 ms", "0.352x (..)", "6/6",
+// "±3.1%"), left-aligned when any is words (a call, a state, a role).
+const FIGURE = /^[-+±<~(]?\d|^-$/;
+
 export function markdownTable(header: string[], rows: string[][]): string {
   const row = (cells: string[]): string => `| ${cells.map((c) => escapeMd(c)).join(" | ")} |`;
-  return [row(header), `| ${header.map((_, i) => (i === 0 ? ":---" : "---:")).join(" | ")} |`, ...rows.map(row)].join("\n");
+  const numeric = header.map((_, i) => i > 0 && rows.every((r) => !r[i] || FIGURE.test(r[i]!)));
+  return [row(header), `| ${numeric.map((n) => (n ? "---:" : ":---")).join(" | ")} |`, ...rows.map(row)].join("\n");
 }
 
 export function toMarkdown(r: Report): string {

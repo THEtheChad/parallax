@@ -1,6 +1,7 @@
 // Rendering of a comparison of two runs (commands/compareResults.ts) as text, Markdown or CSV, on the
 // report model (model.ts). A pure function of the comparison.
 
+import { basename } from "node:path";
 import type { Comparison, CompareRow } from "../commands/compareResults.ts";
 import { renderDecision } from "../timing/policy.ts";
 import { mib, ms, ratio } from "./common.ts";
@@ -36,7 +37,8 @@ function shiftColumn(c: Comparison): { header: string; cell: (r: CompareRow) => 
 function describe(c: Comparison, which: "old" | "new"): string {
   const r = c[which];
   const what = r.form === "result" ? `result ${r.id?.slice(0, 8) ?? "?"}` : "bundle";
-  return `${which}: ${r.source} (${what}, ${r.createdAt.slice(0, 10)}, machine ${r.machine?.slice(0, 8) ?? "unknown"}, harness ${r.harnessCommit?.slice(0, 12) ?? "unknown"})`;
+  // The file or directory's name: the full path is machine-local (it is in --format json).
+  return `${which}: ${basename(r.source)} (${what}, ${r.createdAt.slice(0, 10)}, machine ${r.machine?.slice(0, 8) ?? "unknown"}, harness ${r.harnessCommit?.slice(0, 12) ?? "unknown"})`;
 }
 
 export function comparisonReport(c: Comparison): Report {
@@ -63,26 +65,42 @@ export function comparisonReport(c: Comparison): Report {
 
   const abs = c.sameMachine === true;
   const shift = shiftColumn(c);
-  const columns = ["n old/new", "old ratio", "new ratio", shift.header, "call", "ref old -> new", ...(abs ? ["own new/old (same machine)"] : [])];
+  // The called figures only, to keep the table narrow; the references' times and (same machine) the
+  // candidates' own times are context, in a table of their own for a CLI bench and in json/csv for an
+  // lsp-bench's hundred rows.
+  const columns = ["n old/new", "old ratio", "new ratio", shift.header, "call"];
   const cells = (r: CompareRow): string[] => [
     r.old && r.new ? `${r.old.rounds}/${r.new.rounds}` : "-",
     r.old ? ratio(r.old.ratio) : "-",
     r.new ? ratio(r.new.ratio) : "-",
     shift.cell(r),
     callText(r, c),
-    r.old && r.new ? `${figure(r.old.refMedian, r.unit)} -> ${figure(r.new.refMedian, r.unit)}` : "-",
-    ...(abs ? [r.absolute ? `${ratio(r.absolute.estimate)} (${ratio(r.absolute.low)}..${ratio(r.absolute.high)})` : "-"] : []),
   ];
+  const span = (a: number, b: number, unit: string): string => `${figure(a, unit)} → ${figure(b, unit)}`;
   const refName = (ref: CompareRow["ref"], sep: string): string => (ref.old === ref.new ? ref.new : `${ref.old}${sep}${ref.new}`);
 
   if (c.kind === "cli-bench") {
     blocks.push({ kind: "table", header: ["candidate", "vs", ...columns], rows: c.rows.map((r) => [r.label, refName(r.ref, " / "), ...cells(r)]) });
+    const context = c.rows.filter((r) => r.old && r.new);
+    if (context.length)
+      blocks.push({
+        kind: "table",
+        caption: abs ? "context, not called: wall medians old → new, and each candidate's own time new/old (same machine)" : "context, not called: wall medians old → new",
+        header: ["candidate", "reference", "candidate time", ...(abs ? ["own new/old"] : [])],
+        rows: context.map((r) => [
+          r.label,
+          span(r.old!.refMedian, r.new!.refMedian, r.unit),
+          span(r.old!.candMedian, r.new!.candMedian, r.unit),
+          ...(abs ? [r.absolute ? `${ratio(r.absolute.estimate)} (${ratio(r.absolute.low)}..${ratio(r.absolute.high)})` : "-"] : []),
+        ]),
+      });
   } else {
     for (const label of new Set(c.rows.map((r) => r.label))) {
       const rows = c.rows.filter((r) => r.label === label);
       blocks.push({ kind: "heading", text: `${label} vs ${refName(rows[0]!.ref, " (old) / ")}${rows[0]!.ref.old === rows[0]!.ref.new ? "" : " (new)"}` });
       blocks.push({ kind: "table", header: ["metric", ...columns], rows: rows.map((r) => [r.metricLabel, ...cells(r)]) });
     }
+    blocks.push({ kind: "lines", lines: [line(`each metric's reference and candidate medians, old and new${abs ? ", and the candidates' own new/old" : ""}: --format json or csv`)] });
   }
   const order = ["worse", "better", "same", "unresolved", "too few rounds"] as const;
   const counts = order.filter((k) => c.counts[k]).map((k) => `${c.counts[k]} ${k}`);
@@ -97,7 +115,7 @@ export const comparisonMarkdown = (c: Comparison): string => toMarkdown(comparis
 
 // One row per compared figure; raw numbers and the stored call.
 export function comparisonCsv(c: Comparison): string {
-  const header = ["candidate", "mode", "ref_old", "ref_new", "metric", "unit", "state", "rounds_old", "rounds_new", "ratio_old", "ratio_new", "shift", "shift_low", "shift_high", "coverage", "call", "same_within", "ref_changed"];
+  const header = ["candidate", "mode", "ref_old", "ref_new", "metric", "unit", "state", "rounds_old", "rounds_new", "ratio_old", "ratio_new", "shift", "shift_low", "shift_high", "coverage", "call", "same_within", "ref_changed", "ref_median_old", "ref_median_new", "cand_median_old", "cand_median_new", "own_shift", "own_low", "own_high"];
   return toCsv(
     header,
     c.rows.map((r) => [
@@ -119,6 +137,13 @@ export function comparisonCsv(c: Comparison): string {
       r.call,
       r.sameWithin,
       r.refChanged ? "true" : "false",
+      r.old?.refMedian ?? null,
+      r.new?.refMedian ?? null,
+      r.old?.candMedian ?? null,
+      r.new?.candMedian ?? null,
+      r.absolute?.estimate ?? null,
+      r.absolute?.low ?? null,
+      r.absolute?.high ?? null,
     ]),
   );
 }

@@ -5,7 +5,8 @@ import type { Call, Interval } from "../timing/stats.ts";
 import type { Resolution } from "../timing/summary.ts";
 import { line, toCsv, type Line } from "./model.ts";
 
-export const ms = (v: number): string => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(v < 10 ? 1 : 0)} ms`);
+// Under 1 ms two decimals: 0.26 ms and 0.33 ms must not both read 0.3 ms beside a call between them.
+export const ms = (v: number): string => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(v < 1 ? 2 : v < 10 ? 1 : 0)} ms`);
 // Binary units: the figures are divided by 2^20 and 1024.
 export const mib = (v: number): string => `${Math.round(v / 2 ** 20)} MiB`;
 export const kibPerEdit = (v: number): string => `${(v / 1024).toFixed(Math.abs(v) < 10 * 1024 ? 1 : 0)} KiB/edit`;

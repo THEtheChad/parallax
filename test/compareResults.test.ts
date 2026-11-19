@@ -334,6 +334,10 @@ test("--fail-on for an lsp-bench: metrics narrowed and validated; output refused
   const policy = (failOn: string, metrics?: string) => parsePolicy({ failOn, metrics }, "lsp-bench")!;
   assert.deepEqual(evaluateLspPolicy(summary, policy("slower,unresolved")).failures.map((f) => f.metric), ["edit.diagnosticsMs", "typing.completionP50Ms"]);
   assert.equal(evaluateLspPolicy(summary, policy("slower", "typing.completionP50Ms")).passed, true);
+  // A gate on a metric the run did not measure judges nothing: it fails rather than pass forever.
+  const unmeasured = evaluateLspPolicy(summary, policy("slower", "paused.keyP50Ms"));
+  assert.equal(unmeasured.passed, false);
+  assert.match(unmeasured.failures[0]!.reason, /paused\.keyP50Ms: not measured in this run/);
   assert.throws(() => parsePolicy({ failOn: "output" }, "lsp-bench"), (e: unknown) => e instanceof PolicyError && /lsp-diff/.test(e.message));
   assert.throws(() => parsePolicy({ failOn: "slower", metrics: "long.latencyDrift" }, "lsp-bench"), /uncompared metric "long.latencyDrift"/);
   assert.throws(() => parsePolicy({ failOn: "unresolved", threshold: "1.1" }, "lsp-bench"), /applies to --fail-on slower/);
@@ -371,6 +375,8 @@ test("compare-results on lsp-bench runs: one row per metric, --metrics narrows t
   assert.deepEqual(c.rows.map((r) => [r.metric, r.call]), [["open.firstDiagnosticsMs", "same"], ["edit.diagnosticsMs", "worse"]]);
   assert.equal(c.comparisons, 2);
   const narrow = compareResults(old, lspFile(1.25), { metrics: ["open.firstDiagnosticsMs"], policy: parsePolicy({ failOn: "worse" }, "compare-lsp-bench") });
+  // A named metric neither run measured is refused, not "nothing compared".
+  assert.throws(() => compareResults(old, lspFile(1.25), { metrics: ["paused.keyP50Ms"] }), (e: unknown) => e instanceof CompareError && /paused\.keyP50Ms not measured in either run/.test(e.message));
   assert.deepEqual(narrow.rows.map((r) => r.metric), ["open.firstDiagnosticsMs"]);
   assert.equal(narrow.perComparison, 0.95, "one comparison: no correction");
   assert.equal(narrow.policy!.passed, true, "the slower metric is not in the report");
