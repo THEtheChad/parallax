@@ -19,16 +19,13 @@ import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "./command
 import { lspDiff } from "./commands/lspDiff.ts";
 import { publish, verifyResult } from "./commands/publish.ts";
 import { calibrate, DEFAULT_CALIBRATION_RUNS } from "./commands/calibrate.ts";
-import { renderCalibration } from "./report/calibration.ts";
 import { parseEnvMode, type EnvPolicy } from "./host/sealedEnv.ts";
 import { expandCpuList } from "./host/pinning.ts";
 import { suiteRun } from "./commands/suiteRun.ts";
 import { parseThreadModes, type ThreadMode } from "./profile/profile.ts";
 import { fetchProject, loadSuite, selectProjects } from "./suite/suite.ts";
 import { compareBundle, type Summary } from "./diff/compare.ts";
-import { renderBenchSummary } from "./report/bench.ts";
-import { renderLspBenchSummary } from "./report/lspBench.ts";
-import { renderSummary } from "./report/summary.ts";
+import { formatBench, formatCalibration, formatLspBench, formatSummary, FORMATS, parseFormat, type Format } from "./report/render.ts";
 import { createLog, fmtElapsed, type Log } from "./log.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -117,6 +114,11 @@ const MACHINE: OptGroup = {
 
 const ENVIRONMENT: OptGroup = { title: "environment", opts: [...ENV, PIN] };
 
+// How the report on stdout is written: text for a terminal, md for a PR comment or
+// $GITHUB_STEP_SUMMARY, json (the summary itself: README has the contract), csv (one row per figure).
+const FORMAT: Opt = { name: "format", value: FORMATS.join("|"), default: "text", help: "how the report on stdout is written: text, md (GitHub Markdown), json (the summary object), csv (one row per figure)" };
+const REPORT: OptGroup = { title: "report", opts: [FORMAT] };
+
 const CHECK: Opt[] = [
   { name: "config", value: "<file>", default: "tsconfig.json", help: "the tsconfig the check command builds ({config} in the profile), relative to --project; not a Parallax configuration file" },
   { name: "timeout-ms", value: "<ms>", default: "600000", help: "a check that runs longer is killed, and its round fails" },
@@ -164,10 +166,12 @@ const COMMANDS: Command[] = [
         ],
       },
       { title: "environment", opts: ENV },
+      REPORT,
     ],
     examples: ["parallax lsp-diff --project ~/src/hono --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/hono-diff"],
     exit: "0 every answer matches and every session is clean, 1 differences or an unclean session, 2 usage or harness error",
     run: async ({ values: o, log }) => {
+      const format = formatOption(o);
       const t0 = performance.now();
       const r = await lspDiff({
         project: o.project as string,
@@ -185,7 +189,7 @@ const COMMANDS: Command[] = [
         log,
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
-      return printSummary(r.summary);
+      return printSummary(r.summary, format);
     },
   },
   {
@@ -194,30 +198,32 @@ const COMMANDS: Command[] = [
     usage: "compare <bundle-dir> [--ref-evidence <dir>]...",
     about: "Recomputes verdicts.jsonl, summary.json and differences/ from the bundle's runs/, then prints the summary as lsp-diff does.",
     positionals: true,
-    options: [{ title: "options", opts: [{ name: "ref-evidence", value: "<dir>", multiple: true, help: "a compatible bundle whose reference answers count as reference variants; repeat for more" }] }],
+    options: [{ title: "options", opts: [{ name: "ref-evidence", value: "<dir>", multiple: true, help: "a compatible bundle whose reference answers count as reference variants; repeat for more" }] }, REPORT],
     examples: ["parallax compare /tmp/hono-diff --ref-evidence /tmp/hono-diff-yesterday"],
     exit: "0 clean, 1 differences or an unclean session, 2 usage or harness error",
     run: async ({ values: o, positionals, log }) => {
+      const format = formatOption(o);
       const dir = oneBundle("compare", positionals, "bundle.json");
       const bundle = readBundle(dir);
       const summary = await compareBundle(dir, bundle, { log, refEvidence: strings(o, "ref-evidence").map((d) => resolve(d)) });
       bundle.normalization = summary.normalization;
       writeJsonAtomic(join(dir, "bundle.json"), bundle);
-      return printSummary(summary);
+      return printSummary(summary, format);
     },
   },
   {
     name: "summary",
     summary: "print an answer-diff bundle's summary again",
-    usage: "summary <bundle-dir>",
+    usage: "summary <bundle-dir> [--format text|md|json|csv]",
     about: "Prints the summary.json of an lsp-diff bundle as lsp-diff did.",
     positionals: true,
-    options: [],
-    examples: ["parallax summary /tmp/hono-diff"],
+    options: [REPORT],
+    examples: ["parallax summary /tmp/hono-diff", "parallax summary /tmp/hono-diff --format md >> $GITHUB_STEP_SUMMARY"],
     exit: "0 clean, 1 differences or an unclean session, 2 usage or harness error",
-    run: async ({ positionals }) => {
+    run: async ({ values: o, positionals }) => {
+      const format = formatOption(o);
       const dir = oneBundle("summary", positionals, "summary.json");
-      return printSummary(JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")) as Summary);
+      return printSummary(JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")) as Summary, format);
     },
   },
   {
@@ -232,6 +238,7 @@ const COMMANDS: Command[] = [
       ROUNDS,
       MACHINE,
       ENVIRONMENT,
+      REPORT,
     ],
     examples: [
       "parallax bench --project ~/src/hono --config tsconfig.build.json --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/hono-bench",
@@ -239,6 +246,7 @@ const COMMANDS: Command[] = [
     ],
     exit: "0 measured cleanly, 1 not measured cleanly (too few rounds, a side failed), 2 usage or harness error",
     run: async ({ values: o, log }) => {
+      const format = formatOption(o);
       const t0 = performance.now();
       const r = await bench({
         project: o.project as string,
@@ -250,7 +258,7 @@ const COMMANDS: Command[] = [
         log,
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
-      console.log(renderBenchSummary(r.summary));
+      console.log(formatBench(r.summary, format));
       return r.summary.clean ? 0 : 1;
     },
   },
@@ -261,13 +269,14 @@ const COMMANDS: Command[] = [
     about:
       "Times each side's language server in the same rounds as bench, through one editor session per side per round: open (time to first diagnostics), edit (first request after an edit, CPU per edit), typing (latency from when each key was due, CPU per key), service (closed loop: the server's own time per request), paused (keys after quiet), errfix (an error shown and cleared), imports (cross-file completion and the add-import fix), long (drift and memory growth per edit). Every request of every session is kept in the bundle.",
     longRunning: true,
-    options: [{ title: "sides and project", opts: [PROJECT, REF, CAND, OUT] }, SESSION, ROUNDS, MACHINE, ENVIRONMENT],
+    options: [{ title: "sides and project", opts: [PROJECT, REF, CAND, OUT] }, SESSION, ROUNDS, MACHINE, ENVIRONMENT, REPORT],
     examples: [
       "parallax lsp-bench --project ~/src/umami --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/umami-lsp",
       "parallax lsp-bench ... --threads default --long-edits 0 --imports 0",
     ],
     exit: "0 measured cleanly, 1 not measured cleanly (too few rounds, a session failed), 2 usage or harness error",
     run: async ({ values: o, log }) => {
+      const format = formatOption(o);
       const t0 = performance.now();
       const r = await lspBench({
         project: o.project as string,
@@ -279,7 +288,7 @@ const COMMANDS: Command[] = [
         log,
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
-      console.log(renderLspBenchSummary(r.summary));
+      console.log(formatLspBench(r.summary, format));
       return r.summary.clean ? 0 : 1;
     },
   },
@@ -306,6 +315,7 @@ const COMMANDS: Command[] = [
       { title: ROUNDS.title, opts: ROUNDS.opts.filter((x) => x.name !== "max-runs").map((x) => (x.name === "runs" ? { ...x, default: String(DEFAULT_CALIBRATION_RUNS), help: "rounds (a fixed number)" } : x)) },
       MACHINE,
       ENVIRONMENT,
+      REPORT,
     ],
     examples: ["parallax calibrate --kind bench --project ~/src/hono --side tsc7=$TSGO --out /tmp/hono-aa"],
     exit: "0 the calibration was kept (or --no-save), 1 the A/A bench was not measured cleanly and nothing was kept, 2 usage or harness error",
@@ -314,6 +324,7 @@ const COMMANDS: Command[] = [
       // Options of the other kind would be ignored: refuse them rather than calibrate another workload.
       const foreign = (o.kind === "bench" ? SESSION.opts : CHECK).map((x) => x.name).filter((k) => o[k] !== undefined);
       if (foreign.length) throw new UsageError(`calibrate --kind ${o.kind} does not take ${foreign.map((k) => `--${k}`).join(", ")}`);
+      const format = formatOption(o);
       const t0 = performance.now();
       const r = await calibrate({
         kind: o.kind === "bench" ? "cli-bench" : "lsp-bench",
@@ -327,31 +338,34 @@ const COMMANDS: Command[] = [
         log,
       });
       log(`done in ${fmtElapsed(performance.now() - t0)}: bundle ${r.dir}`);
-      console.log(renderCalibration(r.calibration, r.file));
+      // The other formats carry the calibration alone; text and md say where it was kept.
+      if (r.file && (format === "json" || format === "csv")) log(`kept for later benches on this host setup: ${r.file}`);
+      console.log(formatCalibration(r.calibration, r.file, format));
       return r.file || o["no-save"] ? 0 : 1;
     },
   },
   {
     name: "bench-summary",
     summary: "recompute a bench or lsp-bench bundle's summary, optionally with other gates",
-    usage: "bench-summary <bundle-dir> [--max-outside-cores <cores>] [--max-canary-drift <fraction>]",
+    usage: "bench-summary <bundle-dir> [--max-outside-cores <cores>] [--max-canary-drift <fraction>] [--format text|md|json|csv]",
     about: "Recomputes summary.json of a bench or lsp-bench bundle from samples.jsonl, which keeps every sample and round, rejected ones included, and prints the report again. Other gates can be tried after the fact.",
     positionals: true,
-    options: [{ title: "gates", opts: MACHINE.opts.filter((x) => x.name.startsWith("max-") && x.name !== "max-busy-cores").map((x) => ({ ...x, default: "the bundle's" })) }],
+    options: [{ title: "gates", opts: MACHINE.opts.filter((x) => x.name.startsWith("max-") && x.name !== "max-busy-cores").map((x) => ({ ...x, default: "the bundle's" })) }, REPORT],
     examples: ["parallax bench-summary /tmp/hono-bench --max-outside-cores 0.5"],
     exit: "0 measured cleanly, 1 not measured cleanly, 2 usage or harness error",
     run: async ({ values: o, positionals }) => {
+      const format = formatOption(o);
       const dir = oneBundle("bench-summary", positionals, "bundle.json");
       const kind = (JSON.parse(readFileSync(join(dir, "bundle.json"), "utf8")) as { kind?: string }).kind;
       if (kind === "lsp-bench") {
         const bundle = readLspBenchBundle(dir);
         const summary = summarizeLspBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
-        console.log(renderLspBenchSummary(summary));
+        console.log(formatLspBench(summary, format));
         return summary.clean ? 0 : 1;
       }
       const bundle = readBenchBundle(dir);
       const summary = summarizeBenchBundle(dir, bundle, { ...bundle.settings.gates, ...gateOptions(o) });
-      console.log(renderBenchSummary(summary));
+      console.log(formatBench(summary, format));
       return summary.clean ? 0 : 1;
     },
   },
@@ -484,20 +498,30 @@ const COMMANDS: Command[] = [
           OUT,
         ],
       },
+      REPORT,
     ],
     examples: ["parallax import-lspdiff --from out/hono-diff --project ~/src/hono --ref tsc7=$TSGO --cand tsrs=$TSRS --out /tmp/hono-import"],
     exit: "0 clean, 1 differences, 2 usage or harness error",
     run: async ({ values: o, log }) => {
+      const format = formatOption(o);
       const r = await importLspdiff({ from: o.from as string, project: o.project as string, out: o.out as string, ref: o.ref as string, cand: o.cand as string, log });
       log(`bundle ${r.dir}`);
-      return printSummary(r.summary);
+      return printSummary(r.summary, format);
     },
   },
 ];
 
-function printSummary(summary: Summary): number {
-  console.log(renderSummary(summary));
+function printSummary(summary: Summary, format: Format): number {
+  console.log(formatSummary(summary, format));
   return summary.clean ? 0 : 1;
+}
+
+function formatOption(o: Values): Format {
+  try {
+    return parseFormat(typeof o.format === "string" ? o.format : undefined);
+  } catch (e) {
+    throw new UsageError((e as Error).message);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

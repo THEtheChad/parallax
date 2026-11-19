@@ -84,6 +84,14 @@ function summarizeResult(r: Pick<PublishedResult, "kind" | "records">): unknown 
 }
 
 const normalize = (v: unknown): unknown => JSON.parse(JSON.stringify(v));
+
+// Summaries gained `notes` (copied from the result's own notes, which the id covers) after results
+// were first published: a result whose summary predates them is checked without them.
+const withoutNewNotes = (recomputed: unknown, stored: unknown): unknown => {
+  if (!recomputed || typeof recomputed !== "object" || (stored && typeof stored === "object" && "notes" in stored)) return recomputed;
+  const { notes: _, ...rest } = recomputed as Record<string, unknown>;
+  return rest;
+};
 const resultId = (r: Omit<PublishedResult, "id">): string => createHash("sha256").update(JSON.stringify(r)).digest("hex").slice(0, 16);
 
 export interface PublishOptions {
@@ -167,7 +175,7 @@ export function verifyResult(file: string): Verification {
   const { id, ...rest } = r;
   if (resultId(rest) !== id) problems.push("the id is not the hash of the result: it was edited after publishing");
   if (!Array.isArray(r.records) || !r.records.length) problems.push("no records");
-  if (!problems.length && !isDeepStrictEqual(normalize(summarizeResult(r as unknown as PublishedResult)), normalize(r.summary)))
+  if (!problems.length && !isDeepStrictEqual(withoutNewNotes(normalize(summarizeResult(r as unknown as PublishedResult)), r.summary), normalize(r.summary)))
     problems.push("the summary is not what the records give");
   if ("hostname" in (r.host ?? {})) problems.push("the host's name is in the result");
   const harnessDiffers = r.harness?.gitCommit !== harnessInfo().gitCommit;

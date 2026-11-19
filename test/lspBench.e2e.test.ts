@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { lspBench, readLspBenchBundle, summarizeLspBenchBundle } from "../src/commands/lspBench.ts";
 import { usageBackend } from "../src/host/serverUsage.ts";
+import { FORMATS, formatLspBench } from "../src/report/render.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // No stored calibration from this machine leaks into the bundles under test.
@@ -121,6 +122,12 @@ test("lsp-bench: open, edit and open-loop typing timed per round; a queueing ser
 
   // The summary is a pure function of samples.jsonl.
   assert.deepEqual(summarizeLspBenchBundle(dir, readLspBenchBundle(dir)), summary);
+
+  // The bundle's warnings reach the summary and the top of the report; every format renders.
+  assert.deepEqual(summary.notes, readLspBenchBundle(dir).notes);
+  assert.ok(summary.notes!.some((n) => /no noise calibration/.test(n)));
+  assert.match(formatLspBench(summary, "text"), /^warnings:\n {2}- /);
+  for (const f of FORMATS) assert.match(formatLspBench(summary, f), /edit\.firstRequestMs|edit: first request after an edit/);
 });
 
 test("lsp-bench: a server that crashes mid-session fails its candidate", async () => {

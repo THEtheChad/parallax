@@ -113,9 +113,15 @@ adds a variable), optionally pinned to cores (`--pin 2-5`, Linux).
 benches one binary against itself to measure this machine's noise floor; later benches on the same
 setup warn when `--resolution` is below it.
 
-The output has a table of sides (wall time, CPU, peak memory, exit code, whether the output matches
-the reference), a table of candidates (ratio, interval, call: `faster`, `slower`, `same ±r`,
-`unresolved` or `too few rounds`), each implementation's parallel speedup, and the counters.
+The output starts with any warnings about the run (no noise calibration, on battery, a lowered
+priority...; kept in the bundle's notes), then a table of sides (wall time, CPU, peak memory in MiB,
+exit code, whether the output matches the reference), a table of candidates (ratio, interval, call:
+`faster`, `slower`, `same ±r`, `same (within 1 ms)` where the millisecond floor decided it,
+`unresolved` or `too few rounds`), each implementation's parallel speedup, and the counters. The
+last line is the verdict: `MEASURED`, with what it does not cover (calls that could still change
+with more rounds; candidates whose output differs from the reference, so their times are of other
+work), or `NOT MEASURED CLEANLY`. `lsp-bench` calls a CPU or memory metric `lower` or `higher`, a
+time `faster` or `slower`.
 
 **[docs/measurement.md](docs/measurement.md) is the method**: what disturbs a measurement and how
 each disturbance is handled, the statistics behind a call, what the counters are for, and what works
@@ -123,6 +129,63 @@ on which OS.
 
 `parallax bench-summary <bundle-dir>` recomputes the summary from `samples.jsonl`, which keeps every
 sample and round, rejected ones included; other gates can be tried after the fact.
+
+### Report formats
+
+`bench`, `lsp-bench`, `calibrate`, `bench-summary` and `summary` take `--format`:
+
+| format | stdout |
+| --- | --- |
+| `text` (default) | the report for a terminal |
+| `md` | the same content as GitHub-flavoured Markdown (headings, tables, warnings as a blockquote), for a PR comment or `$GITHUB_STEP_SUMMARY` |
+| `json` | the summary object itself (`calibrate`: the calibration), as in `summary.json` |
+| `csv` | one row per figure (below) |
+
+The log (progress, the bundle's path) always goes to stderr, so `--format json > summary.json` or
+`--format md >> "$GITHUB_STEP_SUMMARY"` captures only the report.
+
+**CSV.** A bench or lsp-bench CSV is long-format: every row has the columns `kind, label, vs, metric,
+unit, n, value, low, high, ref_value, ratio, ratio_low, ratio_high, confidence, call, same_within,
+state, spread`, empty where one does not apply. Numbers are raw (ms, bytes, counts; fractions, not
+percents), calls are the stored ones (`faster`/`slower` for every metric). Kinds:
+
+- `side`: a side's median of a metric (`value`, interval `low`..`high`, its `confidence`, `n`
+  rounds); bench metrics `wall`, `cpu`, `peak_rss`, lsp-bench metrics by key (`open.firstDiagnosticsMs`).
+- `comparison`: a candidate (`label`) against its reference (`vs`) on a metric: both medians
+  (`value`, `ref_value`), the ratio interval, `call`, `same_within` (the half-width of "same") and the
+  candidate's `state`. A metric never compared by ratio has the call `not compared`.
+- `speedup` (bench): an implementation's single-threaded / default wall ratio.
+- `counter` (bench): a counted run's median (`value`) over `n` runs and its `spread` ((max - min) / median).
+
+`summary` (lsp-diff) writes `candidate, method, verdict, count`, with a `total` method per verdict;
+`calibrate` writes `metric, mode, floor, suggested_resolution, call, coverage, ref_median_ms, rounds`.
+
+### summary.json
+
+`summary.json` (and `--format json`) is the machine-readable result, and a contract: fields are only
+ever added, never renamed or removed, so a reader written today keeps working (new fields are
+optional for readers of older bundles). Each summary names its kind in `schema`:
+`parallax.bench-summary/1` or `parallax.lsp-bench-summary/1`. Top-level fields of both:
+
+| field | what |
+| --- | --- |
+| `canaryBaselineMs` | the fastest canary of the bench, the baseline rounds are judged against |
+| `rounds` | `planned`, `max`, `attempts`, `accepted`, `rejected`, `failed` |
+| `minRounds` | accepted rounds a comparison needs (`--min-runs`), else `noisy` |
+| `confidence` | the confidence a call needed at the last look |
+| `resolution` | what "same" means: `relative` (fraction) and `floorMs` |
+| `gates`, `rejections` | the round gates, and how many rounds each reason rejected |
+| `sides` | per side: its medians with intervals (`estimate`, `low`, `high`, `confidence`, `n`) and counts |
+| `candidates` | per candidate: `ref`, `mode`, `state` (`measured`, `noisy`, `failed`), ratio intervals and calls (`sameWithin`: the half-width of "same") |
+| `settled` | every call is one more rounds would not change |
+| `notes` | the run's warnings, as the report shows them |
+| `clean` | every candidate measured (bench: and every output stable): the exit status |
+
+A bench adds `accounting`, `speedups` and `counters`; an lsp-bench adds `usage`, `memory` and
+`harnessLagP95Ms`, and its `sides[].metrics` and `candidates[].metrics` are keyed by metric
+(`open.firstDiagnosticsMs`, ...; units in `src/timing/lspSummary.ts`, `METRICS`). An lsp-diff
+bundle's `summary.json` (no `schema` field) has `requests`, `refRuns`, `sessions`, `candidates`
+(`totals` and `byMethod` per verdict, `attention`) and `clean`, under the same rule.
 
 ## Timing language servers
 

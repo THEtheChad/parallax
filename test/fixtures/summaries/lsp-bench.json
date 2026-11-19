@@ -1,0 +1,257 @@
+{
+ "schema": "parallax.lsp-bench-summary/1",
+ "canaryBaselineMs": 18.3,
+ "rounds": {
+  "planned": 6,
+  "max": 15,
+  "attempts": 23,
+  "accepted": 15,
+  "rejected": 8,
+  "failed": 0
+ },
+ "minRounds": 3,
+ "confidence": 0.9833,
+ "resolution": {
+  "relative": 0.05,
+  "floorMs": 1
+ },
+ "gates": {
+  "maxOutsideCores": 1,
+  "maxCanaryDrift": 0.1
+ },
+ "rejections": {
+  "canary slower than the fastest canary": 8
+ },
+ "usage": "proc",
+ "memory": "peak",
+ "harnessLagP95Ms": 2.4,
+ "sides": [
+  {
+   "label": "ref",
+   "role": "ref",
+   "mode": "default",
+   "sessions": 15,
+   "failures": 0,
+   "outcomes": {
+    "clean": 24
+   },
+   "requests": 10335,
+   "errors": 0,
+   "cancelled": 622,
+   "errfixMissed": 0,
+   "importsMissed": 1,
+   "metrics": {
+    "open.firstDiagnosticsMs": {
+     "estimate": 315.3,
+     "low": 299.535,
+     "high": 331.065,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "open.cpuMs": {
+     "estimate": 4170,
+     "low": 3961.5,
+     "high": 4378.5,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "edit.firstRequestMs": {
+     "estimate": 7.5,
+     "low": 7.125,
+     "high": 7.875,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "edit.secondRequestMs": {
+     "estimate": 0.3,
+     "low": 0.285,
+     "high": 0.315,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "typing.hoverP50Ms": {
+     "estimate": 27,
+     "low": 25.65,
+     "high": 28.35,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "long.latencyDrift": {
+     "estimate": 1.02,
+     "low": 0.969,
+     "high": 1.0710000000000002,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "long.memoryGrowthPerEditBytes": {
+     "estimate": 2048,
+     "low": 1945.6,
+     "high": 2150.4,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "session.memoryBytes": {
+     "estimate": 1161822208,
+     "low": 1103731097.6,
+     "high": 1219913318.4,
+     "confidence": 0.99,
+     "n": 15
+    }
+   }
+  },
+  {
+   "label": "cand",
+   "role": "cand",
+   "mode": "default",
+   "sessions": 15,
+   "failures": 0,
+   "outcomes": {
+    "clean": 24
+   },
+   "requests": 10335,
+   "errors": 0,
+   "cancelled": 0,
+   "errfixMissed": 0,
+   "importsMissed": 0,
+   "metrics": {
+    "open.firstDiagnosticsMs": {
+     "estimate": 259,
+     "low": 246.04999999999998,
+     "high": 271.95,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "open.cpuMs": {
+     "estimate": 1410,
+     "low": 1339.5,
+     "high": 1480.5,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "edit.firstRequestMs": {
+     "estimate": 7.0,
+     "low": 6.6499999999999995,
+     "high": 7.3500000000000005,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "edit.secondRequestMs": {
+     "estimate": 0.4,
+     "low": 0.38,
+     "high": 0.42000000000000004,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "typing.hoverP50Ms": {
+     "estimate": 5130,
+     "low": 4873.5,
+     "high": 5386.5,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "long.latencyDrift": {
+     "estimate": 0.98,
+     "low": 0.9309999999999999,
+     "high": 1.029,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "long.memoryGrowthPerEditBytes": {
+     "estimate": -512,
+     "low": -486.4,
+     "high": -537.6,
+     "confidence": 0.99,
+     "n": 15
+    },
+    "session.memoryBytes": {
+     "estimate": 725614592,
+     "low": 689333862.4,
+     "high": 761895321.6,
+     "confidence": 0.99,
+     "n": 15
+    }
+   }
+  }
+ ],
+ "candidates": [
+  {
+   "label": "cand",
+   "ref": "ref",
+   "mode": "default",
+   "state": "measured",
+   "metrics": {
+    "open.firstDiagnosticsMs": {
+     "ratio": {
+      "estimate": 0.8144,
+      "low": 0.7736799999999999,
+      "high": 0.8551200000000001,
+      "confidence": 0.99,
+      "n": 15
+     },
+     "call": "faster",
+     "sameWithin": 0.05
+    },
+    "open.cpuMs": {
+     "ratio": {
+      "estimate": 0.3357,
+      "low": 0.318915,
+      "high": 0.352485,
+      "confidence": 0.99,
+      "n": 15
+     },
+     "call": "faster",
+     "sameWithin": 0.05
+    },
+    "edit.firstRequestMs": {
+     "ratio": {
+      "estimate": 0.932,
+      "low": 0.8854,
+      "high": 0.9786000000000001,
+      "confidence": 0.99,
+      "n": 15
+     },
+     "call": "unresolved",
+     "sameWithin": 0.1333
+    },
+    "edit.secondRequestMs": {
+     "ratio": {
+      "estimate": 1.08,
+      "low": 1.026,
+      "high": 1.1340000000000001,
+      "confidence": 0.99,
+      "n": 15
+     },
+     "call": "same",
+     "sameWithin": 3.0133
+    },
+    "typing.hoverP50Ms": {
+     "ratio": {
+      "estimate": 187.53,
+      "low": 178.15349999999998,
+      "high": 196.90650000000002,
+      "confidence": 0.99,
+      "n": 15
+     },
+     "call": "slower",
+     "sameWithin": 0.05
+    },
+    "session.memoryBytes": {
+     "ratio": {
+      "estimate": 0.6254,
+      "low": 0.5941299999999999,
+      "high": 0.65667,
+      "confidence": 0.99,
+      "n": 15
+     },
+     "call": "faster",
+     "sameWithin": 0.05
+    }
+   }
+  }
+ ],
+ "settled": false,
+ "notes": [
+  "the harness sent keys up to 40 ms late (p95): the client machine was too busy for a 120 ms typing interval"
+ ],
+ "clean": true
+}

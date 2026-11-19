@@ -269,9 +269,12 @@ export async function lspBench(opts: LspBenchOptions): Promise<{ dir: string; bu
   bundle.corpus.changedDuringRun = bundle.corpus.statusSha256Before === null ? null : bundle.corpus.statusSha256Before !== bundle.corpus.statusSha256After;
   if (bundle.corpus.changedDuringRun) bundle.notes.push("the corpus's git status changed during the run");
   bundle.host.loadAfter = hostLoad().loadavg;
-  const summary = summarizeLspBenchBundle(dir, bundle);
-  if (summary.harnessLagP95Ms !== null && summary.harnessLagP95Ms > settings.intervalMs / 4)
+  let summary = summarizeLspBenchBundle(dir, bundle);
+  if (summary.harnessLagP95Ms !== null && summary.harnessLagP95Ms > settings.intervalMs / 4) {
     warn(`the harness sent keys up to ${summary.harnessLagP95Ms.toFixed(0)} ms late (p95): the client machine was too busy for a ${settings.intervalMs} ms typing interval`);
+    // Again, so the summary carries the warning its own figures raised.
+    summary = summarizeLspBenchBundle(dir, bundle);
+  }
   bundle.status = "complete";
   bundle.finishedAt = new Date().toISOString();
   save();
@@ -300,6 +303,8 @@ export function summarizeLspBenchRecords(bundle: LspBenchBundle, records: Record
     gates,
     usage: bundle.host.usage,
     memory: bundle.host.memory,
+    // Copied, so the summary does not change when the bundle's notes grow later.
+    notes: [...(bundle.notes ?? [])],
   });
 }
 
